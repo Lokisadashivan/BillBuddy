@@ -92,15 +92,25 @@ function mockParse(files: File[]): Txn[] {
   files.forEach((_, idx) => {
     for (let i = 0; i < 12; i++) {
       const base = templates[(idx + i) % templates.length];
-      const jitter = i % 3 === 0 ? 0 : (i % 2) * 0.87;
-      const amount = +(base.amount + jitter).toFixed(2);
+      // Use exact amounts from templates without jitter
+      const amount = base.amount;
       const d = new Date();
       d.setMonth(d.getMonth() - (i % 4));
       d.setDate(((day + i) % 27) + 1);
-      txns.push({ id: uid(), date: d.toISOString().slice(0, 10), merchant: base.merchant, amount, currency: "USD", paidBy: "You" });
+      txns.push({ 
+        id: uid(), 
+        date: d.toISOString().slice(0, 10), 
+        merchant: base.merchant, 
+        amount, 
+        currency: "USD", 
+        paidBy: "You",
+        category: autoCategory(base.merchant), // Add auto-categorization
+        notes: "Mock data - upload a real PDF to see actual transactions" // Mark as mock data
+      });
     }
     day += 2;
   });
+  console.log("Generated mock transactions:", txns.length, "with exact amounts from templates");
   return txns;
 }
 
@@ -247,12 +257,31 @@ function parseLinesToTxns(text: string): Txn[] {
 async function parseFile(file: File): Promise<Txn[]> {
   const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
   if (isPdf) {
-    const text = await extractPdfText(file);
-    const sc = parseSCStatement(text); if (sc.length) return sc;
-    const generic = parseLinesToTxns(text); if (generic.length) return generic;
-    console.warn("Parser could not map lines → using mock data.");
-    return mockParse([file]);
+    try {
+      const text = await extractPdfText(file);
+      console.log("Extracted PDF text:", text.substring(0, 500) + "...");
+      
+      const sc = parseSCStatement(text); 
+      if (sc.length) {
+        console.log("Parsed SC statement:", sc.length, "transactions");
+        return sc;
+      }
+      
+      const generic = parseLinesToTxns(text); 
+      if (generic.length) {
+        console.log("Parsed generic format:", generic.length, "transactions");
+        return generic;
+      }
+      
+      console.warn("PDF parsing failed - no transactions found. Using mock data as fallback.");
+      console.log("PDF text sample:", text.substring(0, 1000));
+      return mockParse([file]);
+    } catch (error) {
+      console.error("Error parsing PDF:", error);
+      return mockParse([file]);
+    }
   }
+  console.log("Non-PDF file, using mock data");
   return mockParse([file]);
 }
 
@@ -263,8 +292,8 @@ const Card: React.FC<{ title?: string; children: React.ReactNode; className?: st
     {children}
   </div>
 );
-const Pill = ({ children }: { children: React.ReactNode }) => (
-  <span className="px-2 py-0.5 rounded-full text-xs bg-neutral-100 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700">{children}</span>
+const Pill = ({ children, className }: { children: React.ReactNode; className?: string }) => (
+  <span className={`px-2 py-0.5 rounded-full text-xs bg-neutral-100 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 ${className || ""}`}>{children}</span>
 );
 
 // --- Main ---
@@ -493,6 +522,7 @@ export default function BillBuddyPrototype() {
                   {!inTrash && t.groupId ? <Pill>📦 grouped</Pill> : null}
                   {!inTrash && t.amount >= 200 ? <Pill><AlertTriangle className="inline w-3 h-3 mr-1"/>high</Pill> : null}
                   {!inTrash && t.amount < 0 ? <Pill>↩ credit</Pill> : null}
+                  {t.notes?.includes("Mock data") && <Pill className="bg-orange-100 text-orange-800 border-orange-300">🧪 Mock</Pill>}
                 </td>
                 <td className="p-2 text-right">{fmt(t.amount)}</td>
                 <td className="p-2">
@@ -762,6 +792,15 @@ export default function BillBuddyPrototype() {
             <button disabled={!files.length} onClick={handleParse} className="px-4 py-2 rounded-xl bg-neutral-900 text-white dark:bg-white dark:text-neutral-900 disabled:opacity-50">Parse & Auto-Group</button>
           </div>
           {!!files.length && <div className="text-xs text-neutral-600 dark:text-neutral-400 mt-2">Selected: {files.map((f) => f.name).join(", ")}</div>}
+          {txns.length > 0 && txns.some(t => t.notes?.includes("Mock data")) && (
+            <div className="mt-3 p-3 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-lg">
+              <div className="text-sm text-orange-800 dark:text-orange-200 font-medium">🧪 Mock Data Active</div>
+              <div className="text-xs text-orange-700 dark:text-orange-300 mt-1">
+                Your PDF couldn't be parsed, so we're showing sample data. Check the browser console for parsing details. 
+                Make sure your PDF contains readable text (not scanned images).
+              </div>
+            </div>
+          )}
         </Card>
         <QuickSummary />
       </section>

@@ -483,7 +483,6 @@ function parseSCStatement(text: string): Txn[] {
   const year = statementYear;
 
   // Improved parsing: Look for transaction blocks with better pattern matching
-  const lines = text.split('\n');
   let currentDate = '';
   let currentAmount = 0;
   let currentMerchant = '';

@@ -142,83 +142,341 @@ async function extractPdfText(file: File) {
 
 // Standard Chartered SG parser
 function parseSCStatement(text: string): Txn[] {
+  console.log("Starting SC statement parsing...");
   const out: Txn[] = [];
+  
+  // Extract statement year
   const yearMatch = text.match(/Statement Date\s*:\s*\d{1,2}\s+[A-Za-z]{3,}\s+(\d{4})/i);
   const year = yearMatch ? Number(yearMatch[1]) : new Date().getFullYear();
+  console.log("Found statement year:", year);
 
-  // Improved parsing: Look for transaction blocks with date, description, and amount together
-  const transactionBlocks = text.split(/\n\s*\n/); // Split by double newlines to find transaction blocks
-  
-  for (const block of transactionBlocks) {
-    // Look for date pattern followed by description and amount
-    const dateMatch = block.match(/(\d{1,2}\s+[A-Za-z]{3})\s+(\d{1,2}\s+[A-Za-z]{3})/);
-    if (!dateMatch) continue;
+  // Look for transaction table format first
+  const tableHeaderMatch = text.match(/Transaction Date\s+Posting Date\s+Description\s+Amount\s*\(SGD\)/i);
+  if (tableHeaderMatch) {
+    console.log("Found transaction table header, using table parsing...");
+    // Parse structured table format
+    const tableSection = text.substring(text.indexOf("Transaction Date"));
+    const lines = tableSection.split('\n');
     
-    const transactionDate = dateMatch[1];
-    // const postingDate = dateMatch[2]; // Not used in current implementation
-    
-    // Extract amount from the same block
-    const amountMatch = block.match(/(-?\d{1,3}(?:,\d{3})*\.\d{2})(\s*CR)?/);
-    if (!amountMatch) continue;
-    
-    const amount = Number(amountMatch[1].replace(/,/g, ""));
-    const isCredit = amountMatch[2] ? true : false;
-    const finalAmount = isCredit ? -Math.abs(amount) : amount;
-    
-    // Extract merchant description from the same block
-    const lines = block.split('\n');
-    let merchant = '';
-    
-    // Look for merchant description (usually the longest line with alphanumeric content)
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed.length > 5 && 
-          /[A-Z0-9]/.test(trimmed) && 
-          !trimmed.match(/^\d{1,2}\s+[A-Za-z]{3}/) && // Not a date
-          !trimmed.match(/^-?\d{1,3}(?:,\d{3})*\.\d{2}/) && // Not an amount
-          !trimmed.match(/^BALANCE|CREDIT CARD|Statement Date/i)) { // Not header info
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line || line.includes("Page of") || line.includes("This statement serves")) continue;
+      
+      // Look for date pattern: DD MMM DD MMM
+      const dateMatch = line.match(/^(\d{1,2}\s+[A-Za-z]{3})\s+(\d{1,2}\s+[A-Za-z]{3})\s+(.+?)\s+(-?\d{1,3}(?:,\d{3})*\.\d{2})(\s*CR)?$/);
+      if (dateMatch) {
+        const transactionDate = dateMatch[1];
+        const description = dateMatch[3].trim();
+        const amount = Number(dateMatch[4].replace(/,/g, ""));
+        const isCredit = dateMatch[5] ? true : false;
+        const finalAmount = isCredit ? -Math.abs(amount) : amount;
         
-        merchant = trimmed.replace(/\s{2,}/g, " ").trim();
-        break;
-      }
-    }
-    
-    if (merchant && merchant.length > 3) {
-      const d = new Date(`${transactionDate} ${year}`);
-      if (!isNaN(d.getTime())) {
-        out.push({
-          id: uid(),
-          date: d.toISOString().slice(0, 10),
-          merchant,
-          amount: finalAmount,
-          currency: "SGD",
-          paidBy: "You"
-        });
+        if (description && description.length > 3 && !description.includes("BALANCE FROM PREVIOUS STATEMENT")) {
+          const d = new Date(`${transactionDate} ${year}`);
+          if (!isNaN(d.getTime())) {
+            out.push({
+              id: uid(),
+              date: d.toISOString().slice(0, 10),
+              merchant: description,
+              amount: finalAmount,
+              currency: "SGD",
+              paidBy: "You"
+            });
+          }
+        }
       }
     }
   }
-  
-  // Fallback to original method if no transactions found
-  if (out.length === 0) {
-    const descs: string[] = [];
-    const descRe1 = /(?:^|\n)([A-Z0-9][A-Z0-9 @&/.'\-*,]+SINGAPORE SG)(?=\n|$)/g;
-    const descRe2 = /(?:^|\n)(PAYMENT\s*-\s*THANK\s*YOU)(?=\n|$)/gi;
-    for (const m of text.matchAll(descRe1)) descs.push(m[1].replace(/\s{2,}/g, " ").trim());
-    for (const m of text.matchAll(descRe2)) descs.push(m[1].replace(/\s{2,}/g, " ").trim());
-    const cleanedDescs = descs.filter((d) => !/BALANCE FROM PREVIOUS STATEMENT/i.test(d) && !/CREDIT CARD/i.test(d));
 
-    const rowRe = /(?<td>\d{1,2}\s+[A-Za-z]{3})\s+(?<pd>\d{1,2}\s+[A-Za-z]{3})\s+(?<amt>-?\d{1,3}(?:,\d{3})*\.\d{2})(?<cr>\s*CR)?/g;
-    const rows: { date: string; amount: number }[] = [];
-    for (const m of text.matchAll(rowRe)) {
-      const g = (m as any).groups as { td: string; amt: string; cr?: string };
-      const d = new Date(`${g.td} ${year}`); if (isNaN(d.getTime())) continue;
-      const n = Number(g.amt.replace(/,/g, ""));
-      rows.push({ date: d.toISOString().slice(0, 10), amount: g.cr ? -Math.abs(n) : n });
+  // If no transactions found with table format, try alternative patterns
+  if (out.length === 0) {
+    console.log("Transaction table header not found, trying alternative patterns...");
+    
+    // Try to find transaction blocks with date, description, and amount
+    const transactionBlocks = text.split(/\n\s*\n/);
+    
+    for (const block of transactionBlocks) {
+      // Look for date pattern followed by description and amount
+      const dateMatch = block.match(/(\d{1,2}\s+[A-Za-z]{3})\s+(\d{1,2}\s+[A-Za-z]{3})/);
+      if (!dateMatch) continue;
+      
+      const transactionDate = dateMatch[1];
+      
+      // Extract amount from the same block
+      const amountMatch = block.match(/(-?\d{1,3}(?:,\d{3})*\.\d{2})(\s*CR)?/);
+      if (!amountMatch) continue;
+      
+      const amount = Number(amountMatch[1].replace(/,/g, ""));
+      const isCredit = amountMatch[2] ? true : false;
+      const finalAmount = isCredit ? -Math.abs(amount) : amount;
+      
+      // Extract merchant description from the same block
+      const lines = block.split('\n');
+      let merchant = '';
+      
+      // Look for merchant description (usually the longest line with alphanumeric content)
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.length > 5 && 
+            /[A-Z0-9]/.test(trimmed) && 
+            !trimmed.match(/^\d{1,2}\s+[A-Za-z]{3}/) && // Not a date
+            !trimmed.match(/^-?\d{1,3}(?:,\d{3})*\.\d{2}/) && // Not an amount
+            !trimmed.match(/^BALANCE|CREDIT CARD|Statement Date/i)) { // Not header info
+          
+          merchant = trimmed.replace(/\s{2,}/g, " ").trim();
+          break;
+        }
+      }
+      
+      if (merchant && merchant.length > 3) {
+        const d = new Date(`${transactionDate} ${year}`);
+        if (!isNaN(d.getTime())) {
+          out.push({
+            id: uid(),
+            date: d.toISOString().slice(0, 10),
+            merchant,
+            amount: finalAmount,
+            currency: "SGD",
+            paidBy: "You"
+          });
+        }
+      }
     }
-    let r = rows.slice();
-    if (r.length === cleanedDescs.length + 1 && Math.abs(r[0].amount) > 500) r = r.slice(1);
-    const n = Math.min(r.length, cleanedDescs.length);
-    for (let i = 0; i < n; i++) out.push({ id: uid(), date: r[i].date, merchant: cleanedDescs[i], amount: r[i].amount, currency: "SGD", paidBy: "You" });
+  }
+
+  // If still no transactions, try Transaction Ref pattern
+  if (out.length === 0) {
+    console.log("Trying alternative table parsing approach...");
+    
+    // Look for the transaction table section
+    const tableStart = text.indexOf("Transaction Date");
+    if (tableStart !== -1) {
+      const tableText = text.substring(tableStart);
+      const lines = tableText.split('\n');
+      
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line || line.includes("Page of") || line.includes("This statement serves")) continue;
+        
+        // Look for date pattern: DD MMM DD MMM
+        const dateMatch = line.match(/^(\d{1,2}\s+[A-Za-z]{3})\s+(\d{1,2}\s+[A-Za-z]{3})\s+(.+?)\s+(-?\d{1,3}(?:,\d{3})*\.\d{2})(\s*CR)?$/);
+        if (dateMatch) {
+          const transactionDate = dateMatch[1];
+          const description = dateMatch[3].trim();
+          const amount = Number(dateMatch[4].replace(/,/g, ""));
+          const isCredit = dateMatch[5] ? true : false;
+          const finalAmount = isCredit ? -Math.abs(amount) : amount;
+          
+          if (description && description.length > 3 && !description.includes("BALANCE FROM PREVIOUS STATEMENT")) {
+            const d = new Date(`${transactionDate} ${year}`);
+            if (!isNaN(d.getTime())) {
+              out.push({
+                id: uid(),
+                date: d.toISOString().slice(0, 10),
+                merchant: description,
+                amount: finalAmount,
+                currency: "SGD",
+                paidBy: "You"
+              });
+            }
+          }
+        }
+      }
+    }
+    
+    // If still no transactions, try a different approach
+    if (out.length === 0) {
+      console.log("Trying new simple pattern matching approach...");
+      
+      // Look for lines that contain Transaction Ref followed by description
+      const transactionRefLines = text.match(/Transaction Ref \d+\s+([A-Z0-9][A-Z0-9 @&/.'\-*,]+SINGAPORE SG)/g);
+      console.log("Found", transactionRefLines?.length || 0, "Transaction Ref lines");
+      
+      if (transactionRefLines && transactionRefLines.length > 0) {
+        // Extract descriptions from Transaction Ref lines
+        const descriptions: string[] = [];
+        for (const line of transactionRefLines) {
+          const descMatch = line.match(/Transaction Ref \d+\s+(.+)/);
+          if (descMatch) {
+            descriptions.push(descMatch[1].replace(/\s{2,}/g, " ").trim());
+          }
+        }
+        
+        // Now look for the corresponding amounts in the transaction table
+        const amountLines = text.match(/(\d{1,2}\s+[A-Za-z]{3})\s+(\d{1,2}\s+[A-Za-z]{3})\s+(.+?)\s+(-?\d{1,3}(?:,\d{3})*\.\d{2})(\s*CR)?/g);
+        
+        if (amountLines && amountLines.length > 0) {
+          const transactions: { date: string; amount: number; description: string }[] = [];
+          
+          for (const line of amountLines) {
+            const match = line.match(/(\d{1,2}\s+[A-Za-z]{3})\s+(\d{1,2}\s+[A-Za-z]{3})\s+(.+?)\s+(-?\d{1,3}(?:,\d{3})*\.\d{2})(\s*CR)?/);
+            if (match) {
+              const transactionDate = match[1];
+              const description = match[3].trim();
+              const amount = Number(match[4].replace(/,/g, ""));
+              const isCredit = match[5] ? true : false;
+              const finalAmount = isCredit ? -Math.abs(amount) : amount;
+              
+              if (description && description.length > 3 && !description.includes("BALANCE FROM PREVIOUS STATEMENT")) {
+                transactions.push({
+                  date: transactionDate,
+                  amount: finalAmount,
+                  description
+                });
+              }
+            }
+          }
+          
+          // Match descriptions with amounts by finding the best match
+          for (const desc of descriptions) {
+            let bestMatch: { date: string; amount: number; description: string } | null = null;
+            let bestScore = 0;
+            
+            for (const txn of transactions) {
+              // Calculate similarity score
+              const descWords = desc.toLowerCase().split(/\s+/);
+              const txnWords = txn.description.toLowerCase().split(/\s+/);
+              let score = 0;
+              
+              for (const word of descWords) {
+                if (txnWords.some(w => w.includes(word) || word.includes(w))) {
+                  score += 1;
+                }
+              }
+              
+              if (score > bestScore) {
+                bestScore = score;
+                bestMatch = txn;
+              }
+            }
+            
+            if (bestMatch && bestScore > 0) {
+              const d = new Date(`${bestMatch.date} ${year}`);
+              if (!isNaN(d.getTime())) {
+                out.push({
+                  id: uid(),
+                  date: d.toISOString().slice(0, 10),
+                  merchant: desc,
+                  amount: bestMatch.amount,
+                  currency: "SGD",
+                  paidBy: "You"
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Final fallback: try to extract from the transaction table directly
+  if (out.length === 0) {
+    console.log("No transaction table format found, trying Transaction Ref pattern...");
+    
+    // Look for Transaction Ref lines and extract descriptions
+    const transactionRefMatches = text.matchAll(/Transaction Ref (\d+)\s+([A-Z0-9][A-Z0-9 @&/.'\-*,]+SINGAPORE SG)/g);
+    const transactionRefs: { ref: string; description: string }[] = [];
+    
+    for (const match of transactionRefMatches) {
+      transactionRefs.push({
+        ref: match[1],
+        description: match[2].replace(/\s{2,}/g, " ").trim()
+      });
+    }
+    
+    console.log("Found", transactionRefs.length, "Transaction Ref matches");
+    
+    if (transactionRefs.length > 0) {
+      // Try to find the statement date to determine the year
+      const statementDateMatch = text.match(/Statement Date\s*:\s*(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{4})/i);
+      let statementDate = null;
+      if (statementDateMatch) {
+        const day = statementDateMatch[1];
+        const month = statementDateMatch[2];
+        const year = statementDateMatch[3];
+        statementDate = new Date(`${day} ${month} ${year}`);
+      }
+      
+      if (statementDate && !isNaN(statementDate.getTime())) {
+        console.log("Using statement date:", statementDate.toISOString().slice(0, 10));
+        
+        // Look for the transaction table with amounts
+        const tableSection = text.substring(text.indexOf("Transaction Date") || 0);
+        const amountLines = tableSection.match(/(\d{1,2}\s+[A-Za-z]{3})\s+(\d{1,2}\s+[A-Za-z]{3})\s+(.+?)\s+(-?\d{1,3}(?:,\d{3})*\.\d{2})(\s*CR)?/g);
+        
+        if (amountLines) {
+          const transactions: { date: string; amount: number; description: string }[] = [];
+          
+          for (const line of amountLines) {
+            const match = line.match(/(\d{1,2}\s+[A-Za-z]{3})\s+(\d{1,2}\s+[A-Za-z]{3})\s+(.+?)\s+(-?\d{1,3}(?:,\d{3})*\.\d{2})(\s*CR)?/);
+            if (match) {
+              const transactionDate = match[1];
+              const description = match[3].trim();
+              const amount = Number(match[4].replace(/,/g, ""));
+              const isCredit = match[5] ? true : false;
+              const finalAmount = isCredit ? -Math.abs(amount) : amount;
+              
+              if (description && description.length > 3 && !description.includes("BALANCE FROM PREVIOUS STATEMENT")) {
+                transactions.push({
+                  date: transactionDate,
+                  amount: finalAmount,
+                  description
+                });
+              }
+            }
+          }
+          
+          // Match Transaction Ref descriptions with transaction amounts
+          for (const txnRef of transactionRefs) {
+            console.log("Processing Transaction Ref", txnRef.ref + ":", txnRef.description);
+            
+            // Find the best matching transaction
+            let bestMatch: { date: string; amount: number; description: string } | null = null;
+            let bestScore = 0;
+            
+            for (const txn of transactions) {
+              // Calculate similarity score
+              const refWords = txnRef.description.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+              const txnWords = txn.description.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+              let score = 0;
+              
+              for (const refWord of refWords) {
+                for (const txnWord of txnWords) {
+                  if (refWord.includes(txnWord) || txnWord.includes(refWord)) {
+                    score += 1;
+                  }
+                }
+              }
+              
+              if (score > bestScore) {
+                bestScore = score;
+                bestMatch = txn;
+              }
+            }
+            
+            if (bestMatch && bestScore > 0) {
+              const d = new Date(`${bestMatch.date} ${year}`);
+              if (!isNaN(d.getTime())) {
+                out.push({
+                  id: uid(),
+                  date: d.toISOString().slice(0, 10),
+                  merchant: txnRef.description,
+                  amount: bestMatch.amount,
+                  currency: "SGD",
+                  paidBy: "You"
+                });
+                console.log("Created transaction:", d.toISOString().slice(0, 10), "|", txnRef.description, "|", bestMatch.amount);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  console.log("Successfully parsed", out.length, "transactions from SC statement with Transaction Ref pattern");
+  if (out.length > 0) {
+    console.log("Sample transactions:", out.slice(0, 3));
   }
   
   return out;

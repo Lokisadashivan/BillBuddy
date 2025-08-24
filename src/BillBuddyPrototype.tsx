@@ -27,7 +27,7 @@ type Txn = {
   notes?: string;
   paidBy?: string;       // default "You"
   splits?: SplitPart[];  // includes 100% assignments
-  reviewed?: boolean;    // user says “done” for one-offs
+  reviewed?: boolean;    // user says "done" for one-offs
   deleted?: boolean;     // soft delete
 };
 type Group = { id: string; name: string; merchant?: string };
@@ -132,11 +132,27 @@ async function extractPdfText(file: File) {
   const data = await file.arrayBuffer();
   const pdf = await pdfjs.getDocument({ data }).promise;
   let text = "";
+  
+  console.log(`PDF has ${pdf.numPages} pages`);
+  
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
-    text += content.items.map((it: any) => it.str).join("\n") + "\n";
+    const pageText = content.items.map((it: any) => it.str).join(" ");
+    text += pageText + "\n";
+    
+    console.log(`Page ${i} text length: ${pageText.length} characters`);
+    if (pageText.length < 100) {
+      console.log(`Page ${i} content: "${pageText}"`);
+    }
   }
+  
+  // Clean up the text
+  text = text.replace(/\s+/g, ' ').trim();
+  
+  console.log(`Total extracted text length: ${text.length} characters`);
+  console.log("First 500 characters:", text.substring(0, 500));
+  
   return text;
 }
 
@@ -146,79 +162,180 @@ function parseSCStatement(text: string): Txn[] {
   const yearMatch = text.match(/Statement Date\s*:\s*\d{1,2}\s+[A-Za-z]{3,}\s+(\d{4})/i);
   const year = yearMatch ? Number(yearMatch[1]) : new Date().getFullYear();
 
-  // Improved parsing: Look for transaction blocks with date, description, and amount together
-  const transactionBlocks = text.split(/\n\s*\n/); // Split by double newlines to find transaction blocks
+  // Improved parsing: Look for transaction blocks with better pattern matching
+  const lines = text.split('\n');
+  let currentDate = '';
+  let currentAmount = 0;
+  let currentMerchant = '';
+  let isCredit = false;
   
-  for (const block of transactionBlocks) {
-    // Look for date pattern followed by description and amount
-    const dateMatch = block.match(/(\d{1,2}\s+[A-Za-z]{3})\s+(\d{1,2}\s+[A-Za-z]{3})/);
-    if (!dateMatch) continue;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
     
-    const transactionDate = dateMatch[1];
-    // const postingDate = dateMatch[2]; // Not used in current implementation
+    // Skip empty lines and header info
+    if (!line || line.length < 3) continue;
     
-    // Extract amount from the same block
-    const amountMatch = block.match(/(-?\d{1,3}(?:,\d{3})*\.\d{2})(\s*CR)?/);
-    if (!amountMatch) continue;
+    // Look for date patterns (dd MMM format)
+    const dateMatch = line.match(/^(\d{1,2})\s+([A-Za-z]{3})$/);
+    if (dateMatch) {
+      // Reset current transaction data
+      if (currentDate && currentAmount && currentMerchant) {
+        // Save previous transaction if we have all data
+        const d = new Date(`${currentDate} ${year}`);
+        if (!isNaN(d.getTime())) {
+          out.push({
+            id: uid(),
+            date: d.toISOString().slice(0, 10),
+            merchant: currentMerchant,
+            amount: isCredit ? -Math.abs(currentAmount) : currentAmount,
+            currency: "SGD",
+            paidBy: "You"
+          });
+        }
+      }
+      
+      // Start new transaction
+      currentDate = `${dateMatch[1]} ${dateMatch[2]}`;
+      currentAmount = 0;
+      currentMerchant = '';
+      isCredit = false;
+      continue;
+    }
     
-    const amount = Number(amountMatch[1].replace(/,/g, ""));
-    const isCredit = amountMatch[2] ? true : false;
-    const finalAmount = isCredit ? -Math.abs(amount) : amount;
-    
-    // Extract merchant description from the same block
-    const lines = block.split('\n');
-    let merchant = '';
-    
-    // Look for merchant description (usually the longest line with alphanumeric content)
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed.length > 5 && 
-          /[A-Z0-9]/.test(trimmed) && 
-          !trimmed.match(/^\d{1,2}\s+[A-Za-z]{3}/) && // Not a date
-          !trimmed.match(/^-?\d{1,3}(?:,\d{3})*\.\d{2}/) && // Not an amount
-          !trimmed.match(/^BALANCE|CREDIT CARD|Statement Date/i)) { // Not header info
-        
-        merchant = trimmed.replace(/\s{2,}/g, " ").trim();
-        break;
+    // Alternative date format: dd/mm/yyyy or dd-mm-yyyy
+    const altDateMatch = line.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+    if (altDateMatch && !currentDate) {
+      const [, day, month, yearStr] = altDateMatch;
+      const d = new Date(Number(yearStr), Number(month) - 1, Number(day));
+      if (!isNaN(d.getTime())) {
+        currentDate = d.toISOString().slice(0, 10);
+        currentAmount = 0;
+        currentMerchant = '';
+        isCredit = false;
+        continue;
       }
     }
     
-    if (merchant && merchant.length > 3) {
-      const d = new Date(`${transactionDate} ${year}`);
+    // Alternative date format: dd/mm/yyyy or dd-mm-yyyy
+    const altDateMatch = line.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+    if (altDateMatch && !currentDate) {
+      const [, day, month, yearStr] = altDateMatch;
+      const d = new Date(Number(yearStr), Number(month) - 1, Number(day));
       if (!isNaN(d.getTime())) {
-        out.push({
-          id: uid(),
-          date: d.toISOString().slice(0, 10),
-          merchant,
-          amount: finalAmount,
-          currency: "SGD",
-          paidBy: "You"
-        });
+        currentDate = d.toISOString().slice(0, 10);
+        currentAmount = 0;
+        currentMerchant = '';
+        isCredit = false;
+        continue;
       }
+    }
+    
+    // Look for amount patterns (with or without CR indicator)
+    const amountMatch = line.match(/^(-?\d{1,3}(?:,\d{3})*\.\d{2})(\s*CR)?$/);
+    if (amountMatch && currentDate) {
+      currentAmount = Number(amountMatch[1].replace(/,/g, ""));
+      isCredit = amountMatch[2] ? true : false;
+      continue;
+    }
+    
+    // Look for merchant description (usually the longest meaningful line)
+    if (currentDate && currentAmount && !currentMerchant && line.length > 5) {
+      // Skip lines that are clearly not merchant names
+      if (!line.match(/^(BALANCE|CREDIT CARD|Statement Date|Page|Total|Subtotal|Date|Description|Amount|Transaction|Posting)/i) &&
+          !line.match(/^\d/) && // Doesn't start with number
+          !line.match(/^[A-Z\s]+$/) && // Not all caps (likely headers)
+          line.includes(' ') && // Has spaces (likely merchant name)
+          line.length > 8 && // Reasonable length for merchant name
+          !line.match(/^[A-Z]{2,}\s+[A-Z]{2,}$/) && // Not just two uppercase words
+          !line.match(/^[A-Z]+\s+\d+$/) && // Not "WORD 123" format
+          !line.match(/^\d+\s+[A-Z]+$/)) { // Not "123 WORD" format
+        
+        currentMerchant = line.replace(/\s{2,}/g, " ").trim();
+      }
+    }
+  }
+  
+  // Don't forget the last transaction
+  if (currentDate && currentAmount && currentMerchant) {
+    const d = new Date(`${currentDate} ${year}`);
+    if (!isNaN(d.getTime())) {
+      out.push({
+        id: uid(),
+        date: d.toISOString().slice(0, 10),
+        merchant: currentMerchant,
+        amount: isCredit ? -Math.abs(currentAmount) : currentAmount,
+        currency: "SGD",
+        paidBy: "You"
+      });
     }
   }
   
   // Fallback to original method if no transactions found
   if (out.length === 0) {
-    const descs: string[] = [];
-    const descRe1 = /(?:^|\n)([A-Z0-9][A-Z0-9 @&/.'\-*,]+SINGAPORE SG)(?=\n|$)/g;
-    const descRe2 = /(?:^|\n)(PAYMENT\s*-\s*THANK\s*YOU)(?=\n|$)/gi;
-    for (const m of text.matchAll(descRe1)) descs.push(m[1].replace(/\s{2,}/g, " ").trim());
-    for (const m of text.matchAll(descRe2)) descs.push(m[1].replace(/\s{2,}/g, " ").trim());
-    const cleanedDescs = descs.filter((d) => !/BALANCE FROM PREVIOUS STATEMENT/i.test(d) && !/CREDIT CARD/i.test(d));
-
-    const rowRe = /(?<td>\d{1,2}\s+[A-Za-z]{3})\s+(?<pd>\d{1,2}\s+[A-Za-z]{3})\s+(?<amt>-?\d{1,3}(?:,\d{3})*\.\d{2})(?<cr>\s*CR)?/g;
-    const rows: { date: string; amount: number }[] = [];
-    for (const m of text.matchAll(rowRe)) {
-      const g = (m as any).groups as { td: string; amt: string; cr?: string };
-      const d = new Date(`${g.td} ${year}`); if (isNaN(d.getTime())) continue;
-      const n = Number(g.amt.replace(/,/g, ""));
-      rows.push({ date: d.toISOString().slice(0, 10), amount: g.cr ? -Math.abs(n) : n });
+    console.log("Primary parsing failed, trying fallback methods...");
+    
+    // Method 1: Look for transaction rows with date, description, amount pattern
+    const transactionPattern = /(\d{1,2}\s+[A-Za-z]{3})\s+([A-Za-z0-9\s@&/.'\-,]+?)\s+(-?\d{1,3}(?:,\d{3})*\.\d{2})(\s*CR)?/gi;
+    const matches = [...text.matchAll(transactionPattern)];
+    
+    for (const match of matches) {
+      const [, dateStr, merchant, amountStr, creditFlag] = match;
+      
+      // Clean up merchant name
+      const cleanMerchant = merchant.replace(/\s{2,}/g, " ").trim();
+      
+      // Skip if merchant is too short or looks like header
+      if (cleanMerchant.length < 3 || 
+          /^(BALANCE|CREDIT CARD|Statement Date|Page|Total|Subtotal|Date|Description|Amount)/i.test(cleanMerchant)) {
+        continue;
+      }
+      
+      const d = new Date(`${dateStr} ${year}`);
+      if (isNaN(d.getTime())) continue;
+      
+      const amount = Number(amountStr.replace(/,/g, ""));
+      const isCredit = creditFlag ? true : false;
+      
+      out.push({
+        id: uid(),
+        date: d.toISOString().slice(0, 10),
+        merchant: cleanMerchant,
+        amount: isCredit ? -Math.abs(amount) : amount,
+        currency: "SGD",
+        paidBy: "You"
+      });
     }
-    let r = rows.slice();
-    if (r.length === cleanedDescs.length + 1 && Math.abs(r[0].amount) > 500) r = r.slice(1);
-    const n = Math.min(r.length, cleanedDescs.length);
-    for (let i = 0; i < n; i++) out.push({ id: uid(), date: r[i].date, merchant: cleanedDescs[i], amount: r[i].amount, currency: "SGD", paidBy: "You" });
+    
+    // Method 2: Original fallback if still no results
+    if (out.length === 0) {
+      const descs: string[] = [];
+      const descRe1 = /(?:^|\n)([A-Z0-9][A-Z0-9 @&/.'\-*,]+SINGAPORE SG)(?=\n|$)/g;
+      const descRe2 = /(?:^|\n)(PAYMENT\s*-\s*THANK\s*YOU)(?=\n|$)/gi;
+      for (const m of text.matchAll(descRe1)) descs.push(m[1].replace(/\s{2,}/g, " ").trim());
+      for (const m of text.matchAll(descRe2)) descs.push(m[1].replace(/\s{2,}/g, " ").trim());
+      const cleanedDescs = descs.filter((d) => !/BALANCE FROM PREVIOUS STATEMENT/i.test(d) && !/CREDIT CARD/i.test(d));
+
+      const rowRe = /(?<td>\d{1,2}\s+[A-Za-z]{3})\s+(?<pd>\d{1,2}\s+[A-Za-z]{3})\s+(?<amt>-?\d{1,3}(?:,\d{3})*\.\d{2})(?<cr>\s*CR)?/g;
+      const rows: { date: string; amount: number }[] = [];
+      for (const m of text.matchAll(rowRe)) {
+        const g = (m as any).groups as { td: string; amt: string; cr?: string };
+        const d = new Date(`${g.td} ${year}`); if (isNaN(d.getTime())) continue;
+        const n = Number(g.amt.replace(/,/g, ""));
+        rows.push({ date: d.toISOString().slice(0, 10), amount: g.cr ? -Math.abs(n) : n });
+      }
+      let r = rows.slice();
+      if (r.length === cleanedDescs.length + 1 && Math.abs(r[0].amount) > 500) r = r.slice(1);
+      const n = Math.min(r.length, cleanedDescs.length);
+      for (let i = 0; i < n; i++) out.push({ id: uid(), date: r[i].date, merchant: cleanedDescs[i], amount: r[i].amount, currency: "SGD", paidBy: "You" });
+    }
+  }
+  
+  // Add some debugging info
+  if (out.length > 0) {
+    console.log(`Parsed ${out.length} transactions from SC statement`);
+    console.log("Sample transactions:", out.slice(0, 3));
+  } else {
+    console.warn("No transactions parsed from SC statement");
   }
   
   return out;
@@ -283,6 +400,10 @@ export default function BillBuddyPrototype() {
   const [openGroupId, setOpenGroupId] = useState<string | null>(null);
   const [insightsMineOnly, setInsightsMineOnly] = useState(true);
   const [splitFilterFriend, setSplitFilterFriend] = useState<string>("");
+
+  // Debug state for PDF text
+  const [debugText, setDebugText] = useState<string>("");
+  const [showDebug, setShowDebug] = useState(false);
 
   // Soft delete toast
   const [toast, setToast] = useState<{ id: string; message: string } | null>(null);
@@ -423,6 +544,13 @@ export default function BillBuddyPrototype() {
   // Actions
   async function handleParse() {
     if (!files.length) return;
+    
+    // Store debug text from first file
+    if (files[0]) {
+      const debugText = await extractPdfText(files[0]);
+      setDebugText(debugText);
+    }
+    
     const all = (await Promise.all(files.map(parseFile))).flat();
     const gs = suggestGroups(all);
     const byKey = new Map(gs.map(g => [g.merchant!, g.id] as const));
@@ -683,7 +811,7 @@ export default function BillBuddyPrototype() {
         </div>
 
         {/* B) People mini-ledger */}
-        <div className="text-sm mb-1">Who it’s for (People)</div>
+        <div className="text-sm mb-1">Who it's for (People)</div>
         <div className="flex flex-wrap items-center gap-2 mb-3">
           <Pill>You {youNet>=0?"are owed":"owe"} {fmt(Math.abs(youNet))}</Pill>
           {Array.from(balances.entries())
@@ -737,6 +865,9 @@ export default function BillBuddyPrototype() {
         <div className="flex items-center gap-2">
           <button onClick={() => setShowFriendsMgr(true)} className="px-3 py-1.5 text-sm rounded-xl border flex items-center gap-1">
             <UserCircle2 className="w-4 h-4"/> Friends
+          </button>
+          <button onClick={() => setShowDebug(true)} className="px-3 py-1.5 text-sm rounded-xl border flex items-center gap-1">
+            <Wand2 className="w-4 h-4"/> Debug
           </button>
           <button onClick={() => document.documentElement.classList.toggle("dark")} className="px-3 py-1.5 text-sm rounded-xl border border-neutral-300 dark:border-neutral-700">Toggle Theme</button>
           <button onClick={exportCSV} className="px-3 py-1.5 text-sm rounded-xl border flex items-center gap-1"><Download className="w-4 h-4" /> Export CSV</button>
@@ -904,7 +1035,7 @@ export default function BillBuddyPrototype() {
                     {CATS.map(c => [100, 150, 200, 300, 500].map(v => <option key={c + v} value={`${c}|${v}`}>{c} → {fmt(v)}</option>))}
                   </select>
                 </div>
-                <div className="text-[11px] text-neutral-500">Charts respect “My share” (your split share) or “All”.</div>
+                <div className="text-[11px] text-neutral-500">Charts respect "My share" (your split share) or "All".</div>
               </div>
             </Card>
           </section>
@@ -938,6 +1069,29 @@ export default function BillBuddyPrototype() {
       {showFriendsMgr && (
         <FriendsManager friends={friends} onClose={() => setShowFriendsMgr(false)}
           onChange={(next) => setFriends(next.includes("You") ? next : ["You", ...next])} />
+      )}
+
+      {/* Debug Modal */}
+      {showDebug && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50">
+          <div className="w-full max-w-4xl max-h-[80vh] rounded-2xl bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 shadow-xl flex flex-col">
+            <div className="p-4 border-b border-neutral-200 dark:border-neutral-800 flex items-center justify-between">
+              <div className="font-semibold">Debug: Extracted PDF Text</div>
+              <button onClick={() => setShowDebug(false)} className="px-2 py-1 text-sm rounded-lg border flex items-center gap-1"><X className="w-4 h-4" /> Close</button>
+            </div>
+            <div className="p-4 overflow-auto flex-1">
+              <div className="text-sm text-neutral-600 mb-2">Extracted text from PDF (first 2000 characters):</div>
+              <div className="bg-neutral-100 dark:bg-neutral-800 p-3 rounded-lg font-mono text-xs whitespace-pre-wrap max-h-96 overflow-auto">
+                {debugText ? debugText.substring(0, 2000) + (debugText.length > 2000 ? '...' : '') : 'No text extracted yet. Upload and parse a PDF first.'}
+              </div>
+              {debugText && (
+                <div className="mt-3 text-xs text-neutral-500">
+                  Total length: {debugText.length} characters
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Undo Toast */}
@@ -1072,7 +1226,7 @@ function FriendsManager({ friends, onClose, onChange }: {
   function renameFriend(oldName: string) {
     const name = prompt("Rename friend to?", oldName)?.trim();
     if (!name || name === oldName) return;
-    if (name === "You") return alert('“You” is reserved.');
+    if (name === "You") return alert('"You" is reserved.');
     if (list.includes(name)) return alert("That name already exists.");
     setList(prev => prev.map(n => n === oldName ? name : n));
   }

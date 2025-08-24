@@ -354,6 +354,104 @@ function parseSCStatement(text: string): Txn[] {
     return out;
   }
   
+  // NEW APPROACH: Much simpler pattern matching for the actual statement format
+  console.log("Trying new simple pattern matching approach...");
+  
+  // Look for the pattern: dd MMM dd MMM MERCHANT\nTransaction Ref XXXX\nAMOUNT
+  // This matches your actual statement format exactly
+  
+  // First, find all lines that contain "Transaction Ref" followed by a number
+  const transactionRefLines = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (line.includes("Transaction Ref") && /\d+/.test(line)) {
+      transactionRefLines.push({ lineIndex: i, line: line });
+    }
+  }
+  
+  console.log(`Found ${transactionRefLines.length} Transaction Ref lines`);
+  
+  // For each Transaction Ref line, look backwards and forwards to find the complete transaction
+  for (const refLine of transactionRefLines) {
+    const i = refLine.lineIndex;
+    
+    // Look backwards for the merchant line (should contain dates and merchant name)
+    let merchantLine = null;
+    let amountLine = null;
+    
+    // Look backwards up to 3 lines for the merchant line
+    for (let j = i - 1; j >= Math.max(0, i - 3); j--) {
+      const line = lines[j].trim();
+      // Look for pattern: dd MMM dd MMM MERCHANT_NAME SINGAPORE SG
+      const merchantPattern = /^(\d{1,2})\s+([A-Za-z]{3})\s+(\d{1,2})\s+([A-Za-z]{3})\s+(.+?)\s+SINGAPORE SG$/;
+      const match = line.match(merchantPattern);
+      
+      if (match) {
+        merchantLine = { line: line, day: match[1], month: match[2], merchant: match[5] };
+        break;
+      }
+    }
+    
+    // Look forwards up to 3 lines for the amount
+    for (let j = i + 1; j < Math.min(lines.length, i + 4); j++) {
+      const line = lines[j].trim();
+      // Look for amount pattern: just numbers with decimal
+      const amountPattern = /^([\d,]+\.\d{2})$/;
+      const match = line.match(amountPattern);
+      
+      if (match) {
+        amountLine = { line: line, amount: parseFloat(match[1].replace(/,/g, "")) };
+        break;
+      }
+    }
+    
+    // If we found both merchant and amount, create a transaction
+    if (merchantLine && amountLine) {
+      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const monthIndex = monthNames.findIndex(m => m.toLowerCase() === merchantLine.month.toLowerCase());
+      
+      if (monthIndex !== -1) {
+        const transactionDate = new Date(statementYear, monthIndex, parseInt(merchantLine.day));
+        
+        if (!isNaN(transactionDate.getTime())) {
+          const cleanMerchant = merchantLine.merchant.replace(/\s{2,}/g, " ").trim();
+          
+          // Skip if merchant is too short or looks like header
+          if (cleanMerchant.length >= 3 && 
+              !/^(BALANCE|CREDIT CARD|Statement Date|Page|Total|Subtotal|Date|Description|Amount)/i.test(cleanMerchant)) {
+            
+            currentTransactions.push({
+              date: transactionDate.toISOString().slice(0, 10),
+              merchant: cleanMerchant,
+              amount: amountLine.amount
+            });
+            
+            console.log(`NEW APPROACH - Parsed transaction: ${transactionDate.toISOString().slice(0, 10)} | ${cleanMerchant} | $${amountLine.amount}`);
+          }
+        }
+      }
+    }
+  }
+  
+  // If we found transactions with the new approach, use them
+  if (currentTransactions.length > 0) {
+    console.log(`Successfully parsed ${currentTransactions.length} transactions with new simple approach`);
+    
+    for (const txn of currentTransactions) {
+      out.push({
+        id: uid(),
+        date: txn.date,
+        merchant: txn.merchant,
+        amount: txn.amount,
+        currency: "SGD",
+        paidBy: "You",
+        notes: "Parsed from transaction table (new simple method)"
+      });
+    }
+    
+    return out;
+  }
+  
   console.log("No transaction table format found, trying Transaction Ref pattern...");
   
   // Fallback: Look for Transaction Ref patterns (the old method)

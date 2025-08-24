@@ -162,6 +162,63 @@ function parseSCStatement(text: string): Txn[] {
   const yearMatch = text.match(/Statement Date\s*:\s*\d{1,2}\s+[A-Za-z]{3,}\s+(\d{4})/i);
   const year = yearMatch ? Number(yearMatch[1]) : new Date().getFullYear();
 
+  // First, try to parse the specific format from this statement
+  // Look for Transaction Ref patterns with merchant names
+  const transactionRefPattern = /Transaction Ref\s+\d+\s+([A-Z0-9\s@&/.'\-,]+?)\s+SINGAPORE SG/g;
+  const transactionMatches = [...text.matchAll(transactionRefPattern)];
+  
+  if (transactionMatches.length > 0) {
+    console.log(`Found ${transactionMatches.length} transactions with Transaction Ref pattern`);
+    
+    // Get the statement date for all transactions
+    const statementDateMatch = text.match(/Statement Date\s*:\s*(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{4})/i);
+    let transactionDate = '';
+    
+    if (statementDateMatch) {
+      const [, day, month, yearStr] = statementDateMatch;
+      const d = new Date(`${day} ${month} ${yearStr}`);
+      if (!isNaN(d.getTime())) {
+        transactionDate = d.toISOString().slice(0, 10);
+      }
+    }
+    
+    // If no statement date found, use current date
+    if (!transactionDate) {
+      transactionDate = new Date().toISOString().slice(0, 10);
+    }
+    
+    // Create transactions for each merchant found
+    for (const match of transactionMatches) {
+      const merchant = match[1].trim();
+      
+      // Skip if merchant is too short or looks like header
+      if (merchant.length < 3 || 
+          /^(BALANCE|CREDIT CARD|Statement Date|Page|Total|Subtotal|Date|Description|Amount)/i.test(merchant)) {
+        continue;
+      }
+      
+      // For now, assign a placeholder amount since individual amounts aren't in the statement
+      // You can manually adjust these later
+      const placeholderAmount = 50.00; // Default placeholder
+      
+      out.push({
+        id: uid(),
+        date: transactionDate,
+        merchant: merchant,
+        amount: placeholderAmount,
+        currency: "SGD",
+        paidBy: "You",
+        notes: "Amount estimated - check actual amount from your records"
+      });
+    }
+    
+    if (out.length > 0) {
+      console.log(`Parsed ${out.length} transactions from SC statement with Transaction Ref pattern`);
+      console.log("Sample transactions:", out.slice(0, 3));
+      return out;
+    }
+  }
+
   // Improved parsing: Look for transaction blocks with better pattern matching
   const lines = text.split('\n');
   let currentDate = '';

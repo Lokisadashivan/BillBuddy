@@ -247,6 +247,113 @@ function parseSCStatement(text: string): Txn[] {
     return out;
   }
   
+  // Alternative approach: Look for the table structure more systematically
+  console.log("Trying alternative table parsing approach...");
+  
+  // Split text into lines and look for the table structure
+  const lines = text.split('\n');
+  let inTransactionTable = false;
+  let tableHeaderFound = false;
+  let currentTransactions = [];
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    
+    // Look for table header
+    if (line.includes("Transaction") && line.includes("Date") && line.includes("Posting") && line.includes("Description") && line.includes("Amount")) {
+      console.log(`Found table header at line ${i}: ${line}`);
+      inTransactionTable = true;
+      tableHeaderFound = true;
+      continue;
+    }
+    
+    // If we're in the transaction table, look for data rows
+    if (inTransactionTable && tableHeaderFound) {
+      // Look for lines that start with date patterns (dd MMM)
+      const datePattern = /^(\d{1,2})\s+([A-Za-z]{3})\s+(\d{1,2})\s+([A-Za-z]{3})\s+(.+?)\s+SINGAPORE SG$/;
+      const dateMatch = line.match(datePattern);
+      
+      if (dateMatch) {
+        const [, day1, month1, day2, month2, merchant] = dateMatch;
+        console.log(`Found transaction row: ${day1} ${month1} ${day2} ${month2} | ${merchant}`);
+        
+        // Look for the amount on the next line (after Transaction Ref)
+        let amount = null;
+        let j = i + 1;
+        
+        // Skip Transaction Ref line and look for amount
+        while (j < lines.length && j <= i + 3) {
+          const nextLine = lines[j].trim();
+          
+          // Look for amount pattern
+          const amountPattern = /^([\d,]+\.\d{2})$/;
+          const amountMatch = nextLine.match(amountPattern);
+          
+          if (amountMatch) {
+            amount = parseFloat(amountMatch[1].replace(/,/g, ""));
+            console.log(`Found amount: $${amount}`);
+            break;
+          }
+          
+          j++;
+        }
+        
+        if (amount !== null) {
+          // Parse the transaction date
+          const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+          const monthIndex = monthNames.findIndex(m => m.toLowerCase() === month1.toLowerCase());
+          
+          if (monthIndex !== -1) {
+            const transactionDate = new Date(statementYear, monthIndex, parseInt(day1));
+            
+            if (!isNaN(transactionDate.getTime())) {
+              const cleanMerchant = merchant.replace(/\s{2,}/g, " ").trim();
+              
+              // Skip if merchant is too short or looks like header
+              if (cleanMerchant.length >= 3 && 
+                  !/^(BALANCE|CREDIT CARD|Statement Date|Page|Total|Subtotal|Date|Description|Amount)/i.test(cleanMerchant)) {
+                
+                currentTransactions.push({
+                  date: transactionDate.toISOString().slice(0, 10),
+                  merchant: cleanMerchant,
+                  amount: amount
+                });
+                
+                console.log(`Parsed transaction: ${transactionDate.toISOString().slice(0, 10)} | ${cleanMerchant} | $${amount}`);
+              }
+            }
+          }
+        }
+      }
+      
+      // Check if we've reached the end of the transaction table
+      if (line.includes("NEW BALANCE") || line.includes("BALANCE FROM PREVIOUS STATEMENT")) {
+        console.log(`Reached end of transaction table at line ${i}: ${line}`);
+        inTransactionTable = false;
+        break;
+      }
+    }
+  }
+  
+  // If we found transactions with the alternative approach, use them
+  if (currentTransactions.length > 0) {
+    console.log(`Successfully parsed ${currentTransactions.length} transactions with alternative approach`);
+    
+    for (const txn of currentTransactions) {
+      out.push({
+        id: uid(),
+        date: txn.date,
+        merchant: txn.merchant,
+        amount: txn.amount,
+        currency: "SGD",
+        paidBy: "You",
+        notes: "Parsed from transaction table (alternative method)"
+      });
+    }
+    
+    return out;
+  }
+  
   console.log("No transaction table format found, trying Transaction Ref pattern...");
   
   // Fallback: Look for Transaction Ref patterns (the old method)

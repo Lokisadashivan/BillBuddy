@@ -226,13 +226,13 @@ function parseSCStatement(text: string): Txn[] {
 
 // Fallback generic
 function parseLinesToTxns(text: string): Txn[] {
-  const lines = text.split(/\n+/); const out: Txn[] = [];
+  const textLines = text.split(/\n+/); const out: Txn[] = [];
   const patterns: RegExp[] = [
     /(?<date>\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4})\s+(?<desc>.+?)\s+(?<amount>-?\d{1,3}(?:,\d{3})*\.\d{2})(?:\s*(?<cr>CR))?$/,
     /(?<date>\d{1,2}\s+[A-Za-z]{3,}\s+\d{4})\s+(?<desc>.+?)\s+(?:[A-Z]{3}\s*)?(?<amount>-?\d{1,3}(?:,\d{3})*\.\d{2})(?:\s*(?<cr>CR))?$/,
     /(?<date>\d{4}-\d{2}-\d{2})\s+(?<desc>.+?)\s+(?<amount>-?\d{1,3}(?:,\d{3})*\.\d{2})(?:\s*(?<cr>CR))?$/,
   ];
-  for (const raw of lines) {
+  for (const raw of textLines) {
     let m: RegExpMatchArray | null = null;
     for (const re of patterns) { m = raw.match(re); if (m && (m as any).groups) break; }
     if (!m || !(m as any).groups) continue;

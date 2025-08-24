@@ -162,31 +162,115 @@ function parseSCStatement(text: string): Txn[] {
   
   console.log("Starting SC statement parsing...");
   
-  // Get the statement date
+  // Get the statement date for year context
   const statementDateMatch = text.match(/Statement Date\s*:\s*(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{4})/i);
-  let statementDate = '';
+  let statementYear = new Date().getFullYear();
   
   if (statementDateMatch) {
     const [, day, month, yearStr] = statementDateMatch;
-    const d = new Date(`${day} ${month} ${yearStr}`);
-    if (!isNaN(d.getTime())) {
-      statementDate = d.toISOString().slice(0, 10);
-      console.log(`Found statement date: ${statementDate}`);
+    statementYear = Number(yearStr);
+    console.log(`Found statement year: ${statementYear}`);
+  }
+  
+  // Look for the actual transaction table format
+  // Pattern: Transaction Date | Posting Date | Description | Amount
+  // Example: "17 Jul 18 Jul SEE-DR PTE. LTD. SINGAPORE SG\nTransaction Ref 74143255198100010852484\n10.00"
+  
+  // First, try to find the transaction table section
+  const tableStart = text.indexOf("Transaction\nDate\nPosting\nDate Description Amount");
+  if (tableStart === -1) {
+    console.log("Transaction table header not found, trying alternative patterns...");
+  } else {
+    console.log("Found transaction table header at position:", tableStart);
+  }
+  
+  // Look for transaction rows with the pattern: dd MMM dd MMM MERCHANT_NAME\nTransaction Ref XXXX\nAMOUNT
+  const transactionPattern = /(\d{1,2}\s+[A-Za-z]{3})\s+(\d{1,2}\s+[A-Za-z]{3})\s+([A-Z0-9\s@&/.'\-,]+?)\s+SINGAPORE SG\s*\nTransaction Ref\s+\d+\s*\n([\d,]+\.\d{2})/g;
+  
+  let match;
+  const transactions = [];
+  
+  while ((match = transactionPattern.exec(text)) !== null) {
+    const [, transDate, postDate, merchant, amountStr] = match;
+    
+    // Clean up merchant name
+    const cleanMerchant = merchant.replace(/\s{2,}/g, " ").trim();
+    
+    // Skip if merchant is too short or looks like header
+    if (cleanMerchant.length < 3 || 
+        /^(BALANCE|CREDIT CARD|Statement Date|Page|Total|Subtotal|Date|Description|Amount)/i.test(cleanMerchant)) {
+      continue;
     }
+    
+    // Parse the transaction date (use transaction date, not posting date)
+    const dateMatch = transDate.match(/(\d{1,2})\s+([A-Za-z]{3})/);
+    if (!dateMatch) continue;
+    
+    const [, day, month] = dateMatch;
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const monthIndex = monthNames.findIndex(m => m.toLowerCase() === month.toLowerCase());
+    
+    if (monthIndex === -1) continue;
+    
+    const transactionDate = new Date(statementYear, monthIndex, parseInt(day));
+    if (isNaN(transactionDate.getTime())) continue;
+    
+    // Parse amount
+    const amount = parseFloat(amountStr.replace(/,/g, ""));
+    if (isNaN(amount)) continue;
+    
+    transactions.push({
+      date: transactionDate.toISOString().slice(0, 10),
+      merchant: cleanMerchant,
+      amount: amount
+    });
+    
+    console.log(`Found transaction: ${transactionDate.toISOString().slice(0, 10)} | ${cleanMerchant} | $${amount}`);
   }
   
-  if (!statementDate) {
-    console.log("No statement date found, using current date");
-    statementDate = new Date().toISOString().slice(0, 10);
+  // If we found transactions in the table format, use them
+  if (transactions.length > 0) {
+    console.log(`Successfully parsed ${transactions.length} transactions from transaction table`);
+    
+    for (const txn of transactions) {
+      out.push({
+        id: uid(),
+        date: txn.date,
+        merchant: txn.merchant,
+        amount: txn.amount,
+        currency: "SGD",
+        paidBy: "You",
+        notes: "Parsed from transaction table"
+      });
+    }
+    
+    return out;
   }
   
-  // Look for Transaction Ref patterns - this is the main format in your statement
+  console.log("No transaction table format found, trying Transaction Ref pattern...");
+  
+  // Fallback: Look for Transaction Ref patterns (the old method)
   const transactionRefPattern = /Transaction Ref\s+(\d+)\s+([A-Z0-9\s@&/.'\-,]+?)\s+SINGAPORE SG/g;
   const transactionMatches = [...text.matchAll(transactionRefPattern)];
   
   console.log(`Found ${transactionMatches.length} Transaction Ref matches`);
   
   if (transactionMatches.length > 0) {
+    // Get the statement date for fallback
+    let statementDate = '';
+    if (statementDateMatch) {
+      const [, day, month, yearStr] = statementDateMatch;
+      const d = new Date(`${day} ${month} ${yearStr}`);
+      if (!isNaN(d.getTime())) {
+        statementDate = d.toISOString().slice(0, 10);
+        console.log(`Using statement date: ${statementDate}`);
+      }
+    }
+    
+    if (!statementDate) {
+      statementDate = new Date().toISOString().slice(0, 10);
+    }
+    
     // Create transactions for each merchant found
     for (let i = 0; i < transactionMatches.length; i++) {
       const match = transactionMatches[i];
@@ -280,7 +364,7 @@ function parseSCStatement(text: string): Txn[] {
     }
     
     if (out.length > 0) {
-      console.log(`Successfully parsed ${out.length} transactions from SC statement`);
+      console.log(`Successfully parsed ${out.length} transactions from SC statement with Transaction Ref pattern`);
       console.log("Sample transactions:", out.slice(0, 3));
       return out;
     }
@@ -288,9 +372,8 @@ function parseSCStatement(text: string): Txn[] {
   
   console.log("No Transaction Ref patterns found, trying fallback parsing...");
   
-  // If no Transaction Ref patterns found, try the old parsing logic
-  const yearMatch = text.match(/Statement Date\s*:\s*\d{1,2}\s+[A-Za-z]{3,}\s+(\d{4})/i);
-  const year = yearMatch ? Number(yearMatch[1]) : new Date().getFullYear();
+  // If no patterns found, try the old parsing logic
+  const year = statementYear;
 
   // Improved parsing: Look for transaction blocks with better pattern matching
   const lines = text.split('\n');

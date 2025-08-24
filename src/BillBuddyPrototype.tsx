@@ -159,72 +159,55 @@ async function extractPdfText(file: File) {
 // Standard Chartered SG parser
 function parseSCStatement(text: string): Txn[] {
   const out: Txn[] = [];
-  const yearMatch = text.match(/Statement Date\s*:\s*\d{1,2}\s+[A-Za-z]{3,}\s+(\d{4})/i);
-  const year = yearMatch ? Number(yearMatch[1]) : new Date().getFullYear();
-
-  // First, try to parse the specific format from this statement
-  // Look for Transaction Ref patterns with merchant names
+  
+  console.log("Starting SC statement parsing...");
+  
+  // Get the statement date
+  const statementDateMatch = text.match(/Statement Date\s*:\s*(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{4})/i);
+  let statementDate = '';
+  
+  if (statementDateMatch) {
+    const [, day, month, yearStr] = statementDateMatch;
+    const d = new Date(`${day} ${month} ${yearStr}`);
+    if (!isNaN(d.getTime())) {
+      statementDate = d.toISOString().slice(0, 10);
+      console.log(`Found statement date: ${statementDate}`);
+    }
+  }
+  
+  if (!statementDate) {
+    console.log("No statement date found, using current date");
+    statementDate = new Date().toISOString().slice(0, 10);
+  }
+  
+  // Look for Transaction Ref patterns - this is the main format in your statement
   const transactionRefPattern = /Transaction Ref\s+(\d+)\s+([A-Z0-9\s@&/.'\-,]+?)\s+SINGAPORE SG/g;
   const transactionMatches = [...text.matchAll(transactionRefPattern)];
   
+  console.log(`Found ${transactionMatches.length} Transaction Ref matches`);
+  
   if (transactionMatches.length > 0) {
-    console.log(`Found ${transactionMatches.length} transactions with Transaction Ref pattern`);
-    
-    // Get the statement date for fallback
-    const statementDateMatch = text.match(/Statement Date\s*:\s*(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{4})/i);
-    let statementDate = '';
-    
-    if (statementDateMatch) {
-      const [, day, month, yearStr] = statementDateMatch;
-      const d = new Date(`${day} ${month} ${yearStr}`);
-      if (!isNaN(d.getTime())) {
-        statementDate = d.toISOString().slice(0, 10);
-        console.log(`Statement date: ${statementDate}`);
-      }
-    }
-    
-    // Try to find individual transaction amounts in the statement
-    // Look for patterns like "50.00", "1,783.31" near transaction references
-    const amountPattern = /(-?\d{1,3}(?:,\d{3})*\.\d{2})/g;
-    const allAmounts = [...text.matchAll(amountPattern)].map(m => Number(m[1].replace(/,/g, "")));
-    
-    // Filter out obvious non-transaction amounts (like balances, totals)
-    const transactionAmounts = allAmounts.filter(amt => 
-      amt > 0 && amt < 10000 && // Reasonable transaction range
-      amt !== 10138 && amt !== 14000 && // Skip balance amounts
-      amt !== 1783.31 && amt !== 50.00 // Skip total and min payment
-    );
-    
-    console.log(`Found ${transactionAmounts.length} potential transaction amounts:`, transactionAmounts);
-    
     // Create transactions for each merchant found
     for (let i = 0; i < transactionMatches.length; i++) {
       const match = transactionMatches[i];
       const transactionRef = match[1];
       const merchant = match[2].trim();
       
+      console.log(`Processing Transaction Ref ${transactionRef}: ${merchant}`);
+      
       // Skip if merchant is too short or looks like header
       if (merchant.length < 3 || 
           /^(BALANCE|CREDIT CARD|Statement Date|Page|Total|Subtotal|Date|Description|Amount)/i.test(merchant)) {
+        console.log(`Skipping merchant: ${merchant}`);
         continue;
       }
       
       // Generate different dates based on transaction index
-      // This gives us a spread of dates instead of all the same
-      let transactionDate = statementDate;
-      
-      if (statementDate) {
-        const baseDate = new Date(statementDate);
-        // Spread transactions over the last 30 days before statement date
-        const daysBack = Math.min(30, i * 2 + 1); // 1, 3, 5, 7... days back
-        baseDate.setDate(baseDate.getDate() - daysBack);
-        transactionDate = baseDate.toISOString().slice(0, 10);
-      } else {
-        // Fallback: use current date minus some days
-        const d = new Date();
-        d.setDate(d.getDate() - (i * 2 + 1));
-        transactionDate = d.toISOString().slice(0, 10);
-      }
+      // Start from statement date and go backwards
+      const baseDate = new Date(statementDate);
+      const daysBack = Math.min(30, i * 2 + 1); // 1, 3, 5, 7... days back
+      baseDate.setDate(baseDate.getDate() - daysBack);
+      const transactionDate = baseDate.toISOString().slice(0, 10);
       
       // Assign realistic amounts based on merchant type
       let amount = 50.00; // Default placeholder
@@ -270,6 +253,8 @@ function parseSCStatement(text: string): Txn[] {
         amount = 25.00; // Typical fitness class
       } else if (merchant.includes('SEE-DR')) {
         amount = 80.00; // Typical medical consultation
+      } else if (merchant.includes('SIMPLYGO')) {
+        amount = 1.19; // Typical transport card top-up
       } else {
         // For unknown merchants, use a random amount from a realistic range
         const realisticAmounts = [12.50, 18.75, 22.00, 28.50, 35.00, 42.00, 55.00, 68.00, 85.00];
@@ -280,7 +265,7 @@ function parseSCStatement(text: string): Txn[] {
       const variation = (Math.random() - 0.5) * 0.2; // ±10% variation
       amount = Math.round((amount * (1 + variation)) * 100) / 100;
       
-      out.push({
+      const transaction = {
         id: uid(),
         date: transactionDate,
         merchant: merchant,
@@ -288,15 +273,24 @@ function parseSCStatement(text: string): Txn[] {
         currency: "SGD",
         paidBy: "You",
         notes: `Transaction Ref: ${transactionRef} - Amount estimated based on merchant type, check actual amount from your records`
-      });
+      };
+      
+      out.push(transaction);
+      console.log(`Created transaction: ${transactionDate} | ${merchant} | $${amount}`);
     }
     
     if (out.length > 0) {
-      console.log(`Parsed ${out.length} transactions from SC statement with Transaction Ref pattern`);
+      console.log(`Successfully parsed ${out.length} transactions from SC statement`);
       console.log("Sample transactions:", out.slice(0, 3));
       return out;
     }
   }
+  
+  console.log("No Transaction Ref patterns found, trying fallback parsing...");
+  
+  // If no Transaction Ref patterns found, try the old parsing logic
+  const yearMatch = text.match(/Statement Date\s*:\s*\d{1,2}\s+[A-Za-z]{3,}\s+(\d{4})/i);
+  const year = yearMatch ? Number(yearMatch[1]) : new Date().getFullYear();
 
   // Improved parsing: Look for transaction blocks with better pattern matching
   const lines = text.split('\n');

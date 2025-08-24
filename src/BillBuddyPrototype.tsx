@@ -156,10 +156,10 @@ function parseSCStatement(text: string): Txn[] {
     console.log("Found transaction table header, using table parsing...");
     // Parse structured table format
     const tableSection = text.substring(text.indexOf("Transaction Date"));
-    const lines = tableSection.split('\n');
+    const tableLines = tableSection.split('\n');
     
-    for (let i = 1; i < lines.length; i++) {
-      const line = lines[i].trim();
+    for (let i = 1; i < tableLines.length; i++) {
+      const line = tableLines[i].trim();
       if (!line || line.includes("Page of") || line.includes("This statement serves")) continue;
       
       // Look for date pattern: DD MMM DD MMM
@@ -211,11 +211,11 @@ function parseSCStatement(text: string): Txn[] {
       const finalAmount = isCredit ? -Math.abs(amount) : amount;
       
       // Extract merchant description from the same block
-      const lines = block.split('\n');
+      const blockLines = block.split('\n');
       let merchant = '';
       
       // Look for merchant description (usually the longest line with alphanumeric content)
-      for (const line of lines) {
+      for (const line of blockLines) {
         const trimmed = line.trim();
         if (trimmed.length > 5 && 
             /[A-Z0-9]/.test(trimmed) && 
@@ -248,15 +248,15 @@ function parseSCStatement(text: string): Txn[] {
   if (out.length === 0) {
     console.log("Trying alternative table parsing approach...");
     
-    // Look for the transaction table section
-    const tableStart = text.indexOf("Transaction Date");
-    if (tableStart !== -1) {
-      const tableText = text.substring(tableStart);
-      const lines = tableText.split('\n');
-      
-      for (let i = 1; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (!line || line.includes("Page of") || line.includes("This statement serves")) continue;
+     // Look for the transaction table section
+     const tableStart = text.indexOf("Transaction Date");
+     if (tableStart !== -1) {
+       const tableText = text.substring(tableStart);
+       const tableTextLines = tableText.split('\n');
+       
+       for (let i = 1; i < tableTextLines.length; i++) {
+         const line = tableTextLines[i].trim();
+         if (!line || line.includes("Page of") || line.includes("This statement serves")) continue;
         
         // Look for date pattern: DD MMM DD MMM
         const dateMatch = line.match(/^(\d{1,2}\s+[A-Za-z]{3})\s+(\d{1,2}\s+[A-Za-z]{3})\s+(.+?)\s+(-?\d{1,3}(?:,\d{3})*\.\d{2})(\s*CR)?$/);

@@ -216,20 +216,6 @@ function parseSCStatement(text: string): Txn[] {
       }
     }
     
-    // Alternative date format: dd/mm/yyyy or dd-mm-yyyy
-    const altDateMatch = line.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
-    if (altDateMatch && !currentDate) {
-      const [, day, month, yearStr] = altDateMatch;
-      const d = new Date(Number(yearStr), Number(month) - 1, Number(day));
-      if (!isNaN(d.getTime())) {
-        currentDate = d.toISOString().slice(0, 10);
-        currentAmount = 0;
-        currentMerchant = '';
-        isCredit = false;
-        continue;
-      }
-    }
-    
     // Look for amount patterns (with or without CR indicator)
     const amountMatch = line.match(/^(-?\d{1,3}(?:,\d{3})*\.\d{2})(\s*CR)?$/);
     if (amountMatch && currentDate) {

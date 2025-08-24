@@ -452,6 +452,90 @@ function parseSCStatement(text: string): Txn[] {
     return out;
   }
   
+  // COMPREHENSIVE DEBUGGING APPROACH: Let's see exactly what's in the PDF text
+  console.log("=== COMPREHENSIVE DEBUGGING ===");
+  console.log("PDF text length:", text.length);
+  console.log("Number of lines:", lines.length);
+  
+  // Look for any lines that contain amounts
+  const amountLines = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (/\d+\.\d{2}/.test(line)) {
+      amountLines.push({ lineIndex: i, line: line });
+    }
+  }
+  console.log(`Found ${amountLines.length} lines with amount patterns:`, amountLines.slice(0, 10));
+  
+  // Look for any lines that contain dates
+  const dateLines = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (/\d{1,2}\s+[A-Za-z]{3}/.test(line)) {
+      dateLines.push({ lineIndex: i, line: line });
+    }
+  }
+  console.log(`Found ${dateLines.length} lines with date patterns:`, dateLines.slice(0, 10));
+  
+  // Look for any lines that contain "SINGAPORE SG"
+  const singaporeLines = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (line.includes("SINGAPORE SG")) {
+      singaporeLines.push({ lineIndex: i, line: line });
+    }
+  }
+  console.log(`Found ${singaporeLines.length} lines with SINGAPORE SG:`, singaporeLines.slice(0, 10));
+  
+  // Look for the actual transaction data structure
+  console.log("=== LOOKING FOR TRANSACTION STRUCTURE ===");
+  
+  // Find lines that look like transaction data
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    
+    // Skip empty lines
+    if (!line || line.length < 5) continue;
+    
+    // Look for lines that might be transaction data
+    if (line.includes("SINGAPORE SG") && /\d{1,2}\s+[A-Za-z]{3}/.test(line)) {
+      console.log(`Potential transaction line ${i}: "${line}"`);
+      
+      // Look at the next few lines to see the structure
+      for (let j = i; j < Math.min(lines.length, i + 5); j++) {
+        const nextLine = lines[j].trim();
+        if (nextLine) {
+          console.log(`  Line ${j}: "${nextLine}"`);
+        }
+      }
+      console.log("---");
+    }
+  }
+  
+  // Try to find the actual transaction amounts by looking for patterns
+  console.log("=== LOOKING FOR AMOUNTS ===");
+  
+  // Look for lines that are just amounts
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    
+    // Look for lines that are just numbers (likely amounts)
+    if (/^[\d,]+\.\d{2}$/.test(line)) {
+      console.log(`Found amount line ${i}: "${line}"`);
+      
+      // Look backwards to see what this amount belongs to
+      for (let j = Math.max(0, i - 3); j <= i; j++) {
+        const prevLine = lines[j].trim();
+        if (prevLine) {
+          console.log(`  Previous line ${j}: "${prevLine}"`);
+        }
+      }
+      console.log("---");
+    }
+  }
+  
+  console.log("=== END DEBUGGING ===");
+  
   console.log("No transaction table format found, trying Transaction Ref pattern...");
   
   // Fallback: Look for Transaction Ref patterns (the old method)

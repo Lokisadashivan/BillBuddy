@@ -146,7 +146,7 @@ function parseSCStatement(text: string): Txn[] {
   const yearMatch = text.match(/Statement Date\s*:\s*\d{1,2}\s+[A-Za-z]{3,}\s+(\d{4})/i);
   const year = yearMatch ? Number(yearMatch[1]) : new Date().getFullYear();
 
-  const transactionStartRegex = /^\s*(\d{1,2}\s+[A-Za-z]{3})\s+(\d{1,2}\s+[A-Za-z]{3})/;
+  const transactionStartRegex = /^\s*(\d{1,2}\s+[A-Za-z]{3})(\s+\d{1,2}\s+[A-Za-z]{3})?/;
 
   const lines = text.split('\n');
   let i = 0;

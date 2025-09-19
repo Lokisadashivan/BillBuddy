@@ -146,81 +146,80 @@ function parseSCStatement(text: string): Txn[] {
   const yearMatch = text.match(/Statement Date\s*:\s*\d{1,2}\s+[A-Za-z]{3,}\s+(\d{4})/i);
   const year = yearMatch ? Number(yearMatch[1]) : new Date().getFullYear();
 
-  // Improved parsing: Look for transaction blocks with date, description, and amount together
-  const transactionBlocks = text.split(/\n\s*\n/); // Split by double newlines to find transaction blocks
-  
-  for (const block of transactionBlocks) {
-    // Look for date pattern followed by description and amount
-    const dateMatch = block.match(/(\d{1,2}\s+[A-Za-z]{3})\s+(\d{1,2}\s+[A-Za-z]{3})/);
-    if (!dateMatch) continue;
-    
-    const transactionDate = dateMatch[1];
-    // const postingDate = dateMatch[2]; // Not used in current implementation
-    
-    // Extract amount from the same block
-    const amountMatch = block.match(/(-?\d{1,3}(?:,\d{3})*\.\d{2})(\s*CR)?/);
-    if (!amountMatch) continue;
-    
-    const amount = Number(amountMatch[1].replace(/,/g, ""));
-    const isCredit = amountMatch[2] ? true : false;
-    const finalAmount = isCredit ? -Math.abs(amount) : amount;
-    
-    // Extract merchant description from the same block
-    const lines = block.split('\n');
-    let merchant = '';
-    
-    // Look for merchant description (usually the longest line with alphanumeric content)
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed.length > 5 && 
-          /[A-Z0-9]/.test(trimmed) && 
-          !trimmed.match(/^\d{1,2}\s+[A-Za-z]{3}/) && // Not a date
-          !trimmed.match(/^-?\d{1,3}(?:,\d{3})*\.\d{2}/) && // Not an amount
-          !trimmed.match(/^BALANCE|CREDIT CARD|Statement Date/i)) { // Not header info
-        
-        merchant = trimmed.replace(/\s{2,}/g, " ").trim();
-        break;
-      }
-    }
-    
-    if (merchant && merchant.length > 3) {
-      const d = new Date(`${transactionDate} ${year}`);
-      if (!isNaN(d.getTime())) {
-        out.push({
-          id: uid(),
-          date: d.toISOString().slice(0, 10),
-          merchant,
-          amount: finalAmount,
-          currency: "SGD",
-          paidBy: "You"
-        });
-      }
-    }
-  }
-  
-  // Fallback to original method if no transactions found
-  if (out.length === 0) {
-    const descs: string[] = [];
-    const descRe1 = /(?:^|\n)([A-Z0-9][A-Z0-9 @&/.'\-*,]+SINGAPORE SG)(?=\n|$)/g;
-    const descRe2 = /(?:^|\n)(PAYMENT\s*-\s*THANK\s*YOU)(?=\n|$)/gi;
-    for (const m of text.matchAll(descRe1)) descs.push(m[1].replace(/\s{2,}/g, " ").trim());
-    for (const m of text.matchAll(descRe2)) descs.push(m[1].replace(/\s{2,}/g, " ").trim());
-    const cleanedDescs = descs.filter((d) => !/BALANCE FROM PREVIOUS STATEMENT/i.test(d) && !/CREDIT CARD/i.test(d));
+  const transactionStartRegex = /^\s*(\d{1,2}\s+[A-Za-z]{3})\s+(\d{1,2}\s+[A-Za-z]{3})/;
 
-    const rowRe = /(?<td>\d{1,2}\s+[A-Za-z]{3})\s+(?<pd>\d{1,2}\s+[A-Za-z]{3})\s+(?<amt>-?\d{1,3}(?:,\d{3})*\.\d{2})(?<cr>\s*CR)?/g;
-    const rows: { date: string; amount: number }[] = [];
-    for (const m of text.matchAll(rowRe)) {
-      const g = (m as any).groups as { td: string; amt: string; cr?: string };
-      const d = new Date(`${g.td} ${year}`); if (isNaN(d.getTime())) continue;
-      const n = Number(g.amt.replace(/,/g, ""));
-      rows.push({ date: d.toISOString().slice(0, 10), amount: g.cr ? -Math.abs(n) : n });
+  const lines = text.split('\n');
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const dateMatch = line.match(transactionStartRegex);
+
+    if (dateMatch) {
+      const transactionDate = dateMatch[1];
+      let merchantLines: string[] = [];
+      let amountMatch = null;
+      let lineCursor = i;
+
+      let restOfLine = line.substring(dateMatch[0].length).trim();
+
+      const amountOnSameLine = restOfLine.match(/(-?\d{1,3}(?:,\d{3})*\.\d{2})(\s*CR)?\s*$/);
+      if (amountOnSameLine) {
+          amountMatch = amountOnSameLine;
+          const merchantPart = restOfLine.substring(0, amountOnSameLine.index).trim();
+          if (merchantPart) merchantLines.push(merchantPart);
+          lineCursor++;
+      } else {
+        if (restOfLine) merchantLines.push(restOfLine);
+        
+        let j = i + 1;
+        while (j < lines.length) {
+          const nextLine = lines[j];
+          if (transactionStartRegex.test(nextLine)) {
+            break;
+          }
+
+          const currentLineAmountMatch = nextLine.match(/(-?\d{1,3}(?:,\d{3})*\.\d{2})(\s*CR)?\s*$/);
+          if (currentLineAmountMatch) {
+            amountMatch = currentLineAmountMatch;
+            const merchantPart = nextLine.substring(0, currentLineAmountMatch.index).trim();
+            if (merchantPart) merchantLines.push(merchantPart);
+            j++;
+            break;
+          } else {
+            const trimmedLine = nextLine.trim();
+            if(trimmedLine) merchantLines.push(trimmedLine);
+          }
+          j++;
+        }
+        lineCursor = j;
+      }
+
+      if (amountMatch) {
+        const merchant = merchantLines.join(' ').replace(/\s{2,}/g, ' ').trim();
+        const amount = Number(amountMatch[1].replace(/,/g, ""));
+        const isCredit = amountMatch[2] ? true : false;
+        const finalAmount = isCredit ? -Math.abs(amount) : amount;
+
+        if (merchant) {
+          const d = new Date(`${transactionDate} ${year}`);
+          if (!isNaN(d.getTime())) {
+            out.push({
+              id: uid(),
+              date: d.toISOString().slice(0, 10),
+              merchant,
+              amount: finalAmount,
+              currency: "SGD",
+              paidBy: "You"
+            });
+          }
+        }
+      }
+      i = lineCursor;
+    } else {
+      i++;
     }
-    let r = rows.slice();
-    if (r.length === cleanedDescs.length + 1 && Math.abs(r[0].amount) > 500) r = r.slice(1);
-    const n = Math.min(r.length, cleanedDescs.length);
-    for (let i = 0; i < n; i++) out.push({ id: uid(), date: r[i].date, merchant: cleanedDescs[i], amount: r[i].amount, currency: "SGD", paidBy: "You" });
   }
-  
+
   return out;
 }
 

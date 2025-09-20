@@ -127,111 +127,63 @@ function suggestGroups(txns: Txn[]): Group[] {
   return groups;
 }
 
-// --- PDF helpers ---
-async function extractPdfText(file: File) {
-  const data = await file.arrayBuffer();
-  const pdf = await pdfjs.getDocument({ data }).promise;
-  let text = "";
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const content = await page.getTextContent();
-    text += content.items.map((it: any) => it.str).join("\n") + "\n";
-  }
-  return text;
-}
+// --- PDF parsing with Python backend ---
+async function parseFileWithBackend(file: File): Promise<Txn[]> {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('template', 'scb_smart_v1');
 
-// Standard Chartered SG parser
-function parseSCStatement(text: string): Txn[] {
-    const out: Txn[] = [];
-    const yearMatch = text.match(/Statement Date\s*:\s*\d{1,2}\s+[A-Za-z]{3,}\s+(\d{4})/i);
-    const year = yearMatch ? Number(yearMatch[1]) : new Date().getFullYear();
+  try {
+    const response = await fetch('http://localhost:8000/parse', {
+      method: 'POST',
+      body: formData,
+    });
 
-    // Strategy: Find all merchants, find all transaction details, then zip them.
-
-    // 1. Find all merchants
-    const merchantRegex = /Transaction Ref \d+\n(.+)/g;
-    const allMerchants = [...text.matchAll(merchantRegex)].map(m =>
-        m[1].replace(/SINGAPORE SG/i, '')
-            .replace(/#\d+\/\d+~~/, '')
-            .replace(/ Transaction Ref \d+/g, '')
-            .replace(/\s{2,}/g, ' ')
-            .trim()
-    );
-
-    // 2. Find all transaction details
-    const allTransactionDetails: { date: string; amount: string; }[] = [];
-    const lines = text.split('\n').map(l => l.trim()).filter(l => l); // Filter out empty lines
-
-    // Find all transaction data lines (date, date, amount)
-    for (let i = 0; i < lines.length - 2; i++) {
-        const line1 = lines[i];
-        const line2 = lines[i+1];
-        const line3 = lines[i+2];
-
-        if (/^\d{1,2}\s[A-Za-z]{3}$/.test(line1) &&
-            /^\d{1,2}\s[A-Za-z]{3}$/.test(line2) &&
-            /^[\d,]+\.\d{2}(?:CR)?$/.test(line3)) {
-
-            allTransactionDetails.push({ date: line1, amount: line3 });
-            i += 2; // Skip the next 2 lines as they are part of this transaction
-        }
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
     }
 
-    // 3. Combine them
-    const numTransactions = Math.min(allMerchants.length, allTransactionDetails.length);
-    for (let i = 0; i < numTransactions; i++) {
-        const merchant = allMerchants[i];
-        const detail = allTransactionDetails[i];
-
-        const rawAmount = Number(detail.amount.replace(/,/g, "").replace(/CR/,''));
-        const isCredit = detail.amount.includes('CR');
-        const finalAmount = isCredit ? -Math.abs(rawAmount) : rawAmount;
-
-        const d = new Date(`${detail.date} ${year}`);
-        if (!isNaN(d.getTime())) {
-            out.push({
-                id: uid(),
-                date: d.toISOString().slice(0, 10),
-                merchant: merchant,
-                amount: finalAmount,
-                currency: "SGD",
-                paidBy: "You"
-            });
-        }
+    const result = await response.json();
+    
+    if (!result.success) {
+      throw new Error('Backend parsing failed');
     }
 
-    return out;
-}
+    // Convert backend response to our Txn format
+    const transactions: Txn[] = result.data.transactions.map((t: any) => ({
+      id: uid(),
+      date: t.transaction_date,
+      merchant: t.description,
+      amount: parseFloat(t.amount),
+      currency: t.currency || 'SGD',
+      paidBy: 'You',
+      category: autoCategory(t.description),
+      notes: t.reference ? `Ref: ${t.reference}` : undefined
+    }));
 
-// Fallback generic
-function parseLinesToTxns(text: string): Txn[] {
-  const lines = text.split(/\n+/); const out: Txn[] = [];
-  const patterns: RegExp[] = [
-    /(?<date>\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4})\s+(?<desc>.+?)\s+(?<amount>-?\d{1,3}(?:,\d{3})*\.\d{2})(?:\s*(?<cr>CR))?$/,
-    /(?<date>\d{1,2}\s+[A-Za-z]{3,}\s+\d{4})\s+(?<desc>.+?)\s+(?:[A-Z]{3}\s*)?(?<amount>-?\d{1,3}(?:,\d{3})*\.\d{2})(?:\s*(?<cr>CR))?$/,
-    /(?<date>\d{4}-\d{2}-\d{2})\s+(?<desc>.+?)\s+(?<amount>-?\d{1,3}(?:,\d{3})*\.\d{2})(?:\s*(?<cr>CR))?$/,
-  ];
-  for (const raw of lines) {
-    let m: RegExpMatchArray | null = null;
-    for (const re of patterns) { m = raw.match(re); if (m && (m as any).groups) break; }
-    if (!m || !(m as any).groups) continue;
-    const g = (m as any).groups as { date: string; desc: string; amount: string; cr?: string };
-    const d = new Date(g.date); if (isNaN(d.getTime())) continue;
-    const amt = Number(g.amount.replace(/,/g, "")); const signAmt = /\bCR\b/.test(g.cr || raw) ? -Math.abs(amt) : amt;
-    out.push({ id: uid(), date: d.toISOString().slice(0, 10), merchant: g.desc.trim(), amount: signAmt, currency: "USD", paidBy: "You" });
-  }
-  return out;
-}
+    console.log(`Backend parsed ${transactions.length} transactions`);
+    return transactions;
 
-async function parseFile(file: File): Promise<Txn[]> {
-  const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
-  if (isPdf) {
-    const text = await extractPdfText(file);
-    const sc = parseSCStatement(text); if (sc.length) return sc;
-    const generic = parseLinesToTxns(text); if (generic.length) return generic;
-    console.warn("Parser could not map lines → using mock data.");
+  } catch (error) {
+    console.error('Backend parsing failed, falling back to mock data:', error);
     return mockParse([file]);
   }
+}
+
+// Fallback to old parsing method if backend is not available
+async function parseFile(file: File): Promise<Txn[]> {
+  const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+  
+  if (isPdf) {
+    // Try backend first
+    try {
+      return await parseFileWithBackend(file);
+    } catch (error) {
+      console.warn('Backend not available, using fallback parsing');
+    }
+  }
+  
+  // Fallback to mock data
   return mockParse([file]);
 }
 
@@ -711,7 +663,7 @@ export default function BillBuddyPrototype() {
         <div className="flex items-center gap-2">
           <BarChart2 className="w-6 h-6" />
           <h1 className="text-xl font-bold tracking-tight">BillBuddy — Prototype</h1>
-          <Pill>SC PDF Parser</Pill>
+          <Pill>SC A&C Parser</Pill>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={() => setShowFriendsMgr(true)} className="px-3 py-1.5 text-sm rounded-xl border flex items-center gap-1">
@@ -736,7 +688,7 @@ export default function BillBuddyPrototype() {
               <input type="file" multiple accept="application/pdf" className="hidden" onChange={(e) => setFiles(Array.from(e.target.files || []))} />
               <Upload className="w-8 h-8 mx-auto mb-2" />
               <div className="text-sm">Drag & drop or click to choose PDFs</div>
-              <div className="text-xs text-neutral-500 mt-1">Optimized for Standard Chartered (SG) text-PDFs</div>
+              <div className="text-xs text-neutral-500 mt-1">New A&C parsing with Python backend</div>
             </label>
             <button disabled={!files.length} onClick={handleParse} className="px-4 py-2 rounded-xl bg-neutral-900 text-white dark:bg-white dark:text-neutral-900 disabled:opacity-50">Parse & Auto-Group</button>
           </div>
@@ -929,7 +881,7 @@ export default function BillBuddyPrototype() {
 
       <footer className="text-[11px] text-neutral-500 pt-6">
         ● Pending rows have an amber rail; ✓ Reviewed rows lose it. Delete uses soft-delete with Undo & Trash.  
-        Parser tailored for Standard Chartered SG; scanned PDFs need OCR (future).
+        New A&C parser with Python backend for Standard Chartered SG statements.
       </footer>
     </div>
   );

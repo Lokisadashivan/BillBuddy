@@ -160,7 +160,7 @@ function parseSCStatement(text: string): Txn[] {
 
     // 2. Find all transaction details
     const allTransactionDetails: { date: string; amount: string; }[] = [];
-    const lines = text.split('\n').map(l => l.trim());
+    const lines = text.split('\n').map(l => l.trim()).filter(l => l); // Filter out empty lines
 
     // Find all transaction data lines (date, date, amount)
     for (let i = 0; i < lines.length - 2; i++) {

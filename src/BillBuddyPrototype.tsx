@@ -146,80 +146,54 @@ function parseSCStatement(text: string): Txn[] {
   const yearMatch = text.match(/Statement Date\s*:\s*\d{1,2}\s+[A-Za-z]{3,}\s+(\d{4})/i);
   const year = yearMatch ? Number(yearMatch[1]) : new Date().getFullYear();
 
-  const transactionStartRegex = /^\s*(\d{1,2}\s+[A-Za-z]{3})(\s+\d{1,2}\s+[A-Za-z]{3})?/;
+  const transactionBlocks = text.split(/\n\s*\n/);
 
-  const lines = text.split('\n');
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    const dateMatch = line.match(transactionStartRegex);
+  const dateRegex = /(\d{1,2}\s+[A-Za-z]{3})/; // "DD MMM"
+  const amountRegex = /(\d{1,3}(?:,\d{3})*\.\d{2})/; // a number like 1,234.56
+  const creditRegex = /\bCR\b/;
+  const allDatesRegex = /\d{1,2}\s+[A-Za-z]{3}/g;
 
-    if (dateMatch) {
+  for (const block of transactionBlocks) {
+    const dateMatch = block.match(dateRegex);
+    const amountMatch = block.match(amountRegex);
+
+    if (dateMatch && amountMatch) {
       const transactionDate = dateMatch[1];
-      let merchantLines: string[] = [];
-      let amountMatch = null;
-      let lineCursor = i;
+      const rawAmount = Number(amountMatch[1].replace(/,/g, ""));
+      const isCredit = creditRegex.test(block);
+      const finalAmount = isCredit ? -Math.abs(rawAmount) : rawAmount;
 
-      let restOfLine = line.substring(dateMatch[0].length).trim();
+      let merchant = block
+        .replace(amountRegex, '')
+        .replace(creditRegex, '')
+        .replace(allDatesRegex, '')
+        .replace(/\n/g, ' ')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
 
-      const amountOnSameLine = restOfLine.match(/(-?\d{1,3}(?:,\d{3})*\.\d{2})(\s*CR)?\s*$/);
-      if (amountOnSameLine) {
-          amountMatch = amountOnSameLine;
-          const merchantPart = restOfLine.substring(0, amountOnSameLine.index).trim();
-          if (merchantPart) merchantLines.push(merchantPart);
-          lineCursor++;
-      } else {
-        if (restOfLine) merchantLines.push(restOfLine);
-        
-        let j = i + 1;
-        while (j < lines.length) {
-          const nextLine = lines[j];
-          if (transactionStartRegex.test(nextLine)) {
-            break;
-          }
+      // A simple filter for common noise words that are not part of the merchant name
+      const noise = ["Transaction Date", "Posting Date", "Reference Number", "Card Number"];
+      noise.forEach(n => {
+          merchant = merchant.replace(new RegExp(n, "ig"), "");
+      });
+      merchant = merchant.replace(/\s{2,}/g, ' ').trim();
 
-          const currentLineAmountMatch = nextLine.match(/(-?\d{1,3}(?:,\d{3})*\.\d{2})(\s*CR)?\s*$/);
-          if (currentLineAmountMatch) {
-            amountMatch = currentLineAmountMatch;
-            const merchantPart = nextLine.substring(0, currentLineAmountMatch.index).trim();
-            if (merchantPart) merchantLines.push(merchantPart);
-            j++;
-            break;
-          } else {
-            const trimmedLine = nextLine.trim();
-            if(trimmedLine) merchantLines.push(trimmedLine);
-          }
-          j++;
-        }
-        lineCursor = j;
-      }
 
-      if (amountMatch) {
-        const merchant = merchantLines.join(' ').replace(/\s{2,}/g, ' ').trim();
-        const amount = Number(amountMatch[1].replace(/,/g, ""));
-        const isCredit = amountMatch[2] ? true : false;
-        const finalAmount = isCredit ? -Math.abs(amount) : amount;
-
-        if (merchant) {
-          const d = new Date(`${transactionDate} ${year}`);
-          if (!isNaN(d.getTime())) {
-            out.push({
-              id: uid(),
-              date: d.toISOString().slice(0, 10),
-              merchant,
-              amount: finalAmount,
-              currency: "SGD",
-              paidBy: "You"
-            });
-          }
+      if (merchant) {
+        const d = new Date(`${transactionDate} ${year}`);
+        if (!isNaN(d.getTime())) {
+          out.push({
+            id: uid(),
+            date: d.toISOString().slice(0, 10),
+            merchant,
+            amount: finalAmount,
+            currency: "SGD",
+            paidBy: "You"
+          });
         }
       }
-      i = lineCursor;
-    } else {
-      i++;
     }
   }
-
   return out;
 }
 

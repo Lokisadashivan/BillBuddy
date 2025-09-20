@@ -142,59 +142,80 @@ async function extractPdfText(file: File) {
 
 // Standard Chartered SG parser
 function parseSCStatement(text: string): Txn[] {
-  const out: Txn[] = [];
-  const yearMatch = text.match(/Statement Date\s*:\s*\d{1,2}\s+[A-Za-z]{3,}\s+(\d{4})/i);
-  const year = yearMatch ? Number(yearMatch[1]) : new Date().getFullYear();
+    const out: Txn[] = [];
+    const yearMatch = text.match(/Statement Date\s*:\s*\d{1,2}\s+[A-Za-z]{3,}\s+(\d{4})/i);
+    const year = yearMatch ? Number(yearMatch[1]) : new Date().getFullYear();
 
-  const transactionBlocks = text.split(/\n\s*\n/);
+    const pages = text.split(/Page\s*\n\s*of\s*\n\s*\d+\s*\n\s*\d+/);
 
-  const dateRegex = /(\d{1,2}\s+[A-Za-z]{3})/; // "DD MMM"
-  const amountRegex = /(\d{1,3}(?:,\d{3})*\.\d{2})/; // a number like 1,234.56
-  const creditRegex = /\bCR\b/;
-  const allDatesRegex = /\d{1,2}\s+[A-Za-z]{3}/g;
+    let allMerchants: string[] = [];
+    let allTransactionDetails: { date: string; amount: string; }[] = [];
 
-  for (const block of transactionBlocks) {
-    const dateMatch = block.match(dateRegex);
-    const amountMatch = block.match(amountRegex);
+    for (const page of pages) {
+        // On each page, extract merchants
+        const merchantRegex = /Transaction Ref \d+\n(.*?)(?=\n\nTransaction Ref|\n\nPAYMENT|\n\n4864-|\n\nThis statement|\n\nTotal|\n\nFor the latest)/gs;
+        const pageMerchants = [...page.matchAll(merchantRegex)].map(m =>
+            m[1].replace(/SINGAPORE SG/i, '')
+                .replace(/#\d+\/\d+~~/, '')
+                .replace(/ Transaction Ref \d+/g, '')
+                .replace(/\n/g, ' ')
+                .replace(/\s{2,}/g, ' ')
+                .trim()
+        );
+        allMerchants.push(...pageMerchants);
 
-    if (dateMatch && amountMatch) {
-      const transactionDate = dateMatch[1];
-      const rawAmount = Number(amountMatch[1].replace(/,/g, ""));
-      const isCredit = creditRegex.test(block);
-      const finalAmount = isCredit ? -Math.abs(rawAmount) : rawAmount;
+        // And extract transaction details
+        const transactionSections = page.split(/Amount\n\(SGD\)/);
+        if (transactionSections.length < 2) continue;
 
-      let merchant = block
-        .replace(amountRegex, '')
-        .replace(creditRegex, '')
-        .replace(allDatesRegex, '')
-        .replace(/\n/g, ' ')
-        .replace(/\s{2,}/g, ' ')
-        .trim();
+        const transactionData = transactionSections[1];
+        const lineItemRegex = /^(?:\d{1,2}\s[A-Za-z]{3}|[\d,]+\.\d{2}CR?)$/gm;
+        const items = transactionData.match(lineItemRegex) || [];
 
-      // A simple filter for common noise words that are not part of the merchant name
-      const noise = ["Transaction Date", "Posting Date", "Reference Number", "Card Number"];
-      noise.forEach(n => {
-          merchant = merchant.replace(new RegExp(n, "ig"), "");
-      });
-      merchant = merchant.replace(/\s{2,}/g, ' ').trim();
+        for (let i = 0; i < items.length; i += 3) {
+            if (i + 2 < items.length) {
+                const transDate = items[i];
+                const postDate = items[i+1];
+                const amountStr = items[i+2];
 
-
-      if (merchant) {
-        const d = new Date(`${transactionDate} ${year}`);
-        if (!isNaN(d.getTime())) {
-          out.push({
-            id: uid(),
-            date: d.toISOString().slice(0, 10),
-            merchant,
-            amount: finalAmount,
-            currency: "SGD",
-            paidBy: "You"
-          });
+                if (/\d{1,2}\s[A-Za-z]{3}/.test(transDate) && /\d{1,2}\s[A-Za-z]{3}/.test(postDate) && /[\d,]+\.\d{2}/.test(amountStr)) {
+                    allTransactionDetails.push({ date: transDate, amount: amountStr });
+                } else {
+                    // Pattern is broken, try to resync by skipping one item
+                    i = i - 2;
+                }
+            }
         }
-      }
     }
-  }
-  return out;
+
+    // In some cases, the merchant name is split across lines and picked up as separate merchants.
+    // Let's try to filter out some obvious non-merchant entries.
+    const cleanedMerchants = allMerchants.filter(m => !/^\d+$/.test(m) && m.length > 3 && m.toLowerCase() !== 'description');
+
+    // Now, combine merchants and transactionDetails
+    const numTransactions = Math.min(cleanedMerchants.length, allTransactionDetails.length);
+    for (let i = 0; i < numTransactions; i++) {
+        const merchant = cleanedMerchants[i];
+        const detail = allTransactionDetails[i];
+
+        const rawAmount = Number(detail.amount.replace(/,/g, "").replace(/CR/,''));
+        const isCredit = detail.amount.includes('CR');
+        const finalAmount = isCredit ? -Math.abs(rawAmount) : rawAmount;
+
+        const d = new Date(`${detail.date} ${year}`);
+        if (!isNaN(d.getTime())) {
+            out.push({
+                id: uid(),
+                date: d.toISOString().slice(0, 10),
+                merchant: merchant,
+                amount: finalAmount,
+                currency: "SGD",
+                paidBy: "You"
+            });
+        }
+    }
+
+    return out;
 }
 
 // Fallback generic
@@ -243,7 +264,6 @@ const Pill = ({ children }: { children: React.ReactNode }) => (
 // --- Main ---
 export default function BillBuddyPrototype() {
   const [files, setFiles] = useState<File[]>([]);
-  const [rawPdfText, setRawPdfText] = useState<string>(""); // For debugging
   const [txns, setTxns] = useState<Txn[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [friends, setFriends] = useState<string[]>(["You", "Sam", "Priya"]);
@@ -397,14 +417,6 @@ export default function BillBuddyPrototype() {
   // Actions
   async function handleParse() {
     if (!files.length) return;
-
-    // For debugging: extract and show text from the first PDF
-    const firstPdf = files.find(f => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"));
-    if (firstPdf) {
-        const text = await extractPdfText(firstPdf);
-        setRawPdfText(text);
-    }
-
     const all = (await Promise.all(files.map(parseFile))).flat();
     const gs = suggestGroups(all);
     const byKey = new Map(gs.map(g => [g.merchant!, g.id] as const));
@@ -747,13 +759,6 @@ export default function BillBuddyPrototype() {
         </Card>
         <QuickSummary />
       </section>
-
-      {/* DEBUG: Raw PDF text */}
-      {rawPdfText && (
-        <Card title="Raw Extracted PDF Text (for debugging)">
-          <pre className="whitespace-pre-wrap text-xs bg-neutral-100 dark:bg-neutral-800 p-2 rounded-lg">{rawPdfText}</pre>
-        </Card>
-      )}
 
       {/* Main sections */}
       {activeTab === "txns" ? (

@@ -243,6 +243,7 @@ const Pill = ({ children }: { children: React.ReactNode }) => (
 // --- Main ---
 export default function BillBuddyPrototype() {
   const [files, setFiles] = useState<File[]>([]);
+  const [rawPdfText, setRawPdfText] = useState<string>(""); // For debugging
   const [txns, setTxns] = useState<Txn[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [friends, setFriends] = useState<string[]>(["You", "Sam", "Priya"]);
@@ -396,6 +397,14 @@ export default function BillBuddyPrototype() {
   // Actions
   async function handleParse() {
     if (!files.length) return;
+
+    // For debugging: extract and show text from the first PDF
+    const firstPdf = files.find(f => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"));
+    if (firstPdf) {
+        const text = await extractPdfText(firstPdf);
+        setRawPdfText(text);
+    }
+
     const all = (await Promise.all(files.map(parseFile))).flat();
     const gs = suggestGroups(all);
     const byKey = new Map(gs.map(g => [g.merchant!, g.id] as const));
@@ -738,6 +747,13 @@ export default function BillBuddyPrototype() {
         </Card>
         <QuickSummary />
       </section>
+
+      {/* DEBUG: Raw PDF text */}
+      {rawPdfText && (
+        <Card title="Raw Extracted PDF Text (for debugging)">
+          <pre className="whitespace-pre-wrap text-xs bg-neutral-100 dark:bg-neutral-800 p-2 rounded-lg">{rawPdfText}</pre>
+        </Card>
+      )}
 
       {/* Main sections */}
       {activeTab === "txns" ? (

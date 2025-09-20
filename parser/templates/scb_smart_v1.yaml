@@ -1,0 +1,155 @@
+template_id: scb_smart_v1
+bank: "Standard Chartered Bank (Singapore)"
+page_match:
+  must_contain:
+    - "Credit Card and Personal Loan Statement"
+    - "Statement Date"
+    - "Payment Due Date"
+    - "Transaction Date"
+    - "Posting Date"
+    - "Description"
+    - "Amount (SGD)"
+  fuzzy_threshold: 85
+
+fields:
+  card_masked:
+    page: 1
+    find: "SMART CREDIT CARD"
+    strategy: right_line
+    post: trim
+
+  statement_date:
+    page: 1
+    find: "Statement Date"
+    box: {dx1: 120, dy1: -6, dx2: 320, dy2: 22}
+    post: date:%d %b %Y
+
+  payment_due_date:
+    page: 1
+    find: "Payment Due Date"
+    box: {dx1: 120, dy1: -6, dx2: 320, dy2: 22}
+    post: date:%d %b %Y
+
+  approved_credit_limit:
+    page: 1
+    find: "Approved Credit Limit"
+    box: {dx1: 220, dy1: -6, dx2: 360, dy2: 22}
+    post: money
+
+  available_credit_limit:
+    page: 1
+    find: "Available Credit Limit"
+    box: {dx1: 220, dy1: -6, dx2: 360, dy2: 22}
+    post: money
+
+  previous_balance:
+    page: 1
+    find: "Previous Balance"
+    box: {dx1: 220, dy1: -6, dx2: 360, dy2: 22}
+    post: money
+
+  payments:
+    page: 1
+    find: "Payments"
+    box: {dx1: 220, dy1: -6, dx2: 360, dy2: 22}
+    post: money_neg_if_cr
+
+  credits:
+    page: 1
+    find: "Credits"
+    box: {dx1: 220, dy1: -6, dx2: 360, dy2: 22}
+    post: money_neg_if_cr
+
+  purchases:
+    page: 1
+    find: "Purchases"
+    box: {dx1: 220, dy1: -6, dx2: 360, dy2: 22}
+    post: money
+
+  cash_advance:
+    page: 1
+    find: "Cash Advance"
+    box: {dx1: 220, dy1: -6, dx2: 360, dy2: 22}
+    post: money
+
+  charges:
+    page: 1
+    find: "Charges"
+    box: {dx1: 220, dy1: -6, dx2: 360, dy2: 22}
+    post: money
+
+  new_balance:
+    page: 2
+    find: "NEW BALANCE"
+    strategy: right_line
+    post: money
+
+  minimum_payment_due:
+    page: 2
+    find: "MINIMUM PAYMENT DUE"
+    strategy: right_line
+    post: money
+
+transactions:
+  header:
+    label: ["Transaction", "Posting", "Description", "Amount (SGD)"]
+    fuzzy_threshold: 80
+  pages:
+    start_after_page: 1
+    stop_on_anchors:
+      - "360° REWARDS POINTS SUMMARY"
+      - "NEW BALANCE"
+      - "INSTALMENT LOAN / INSTALMENT PLAN SUMMARY"
+  columns:
+    # x1/x2 are absolute positions; adjust to your measured values on the sample PDF
+    - {name: "transaction_date", x1: 40,  x2: 110, type: "date:%d %b"}
+    - {name: "posting_date",     x1: 120, x2: 190, type: "date:%d %b"}
+    - {name: "description",      x1: 200, x2: 460}
+    - {name: "amount",           x1: 470, x2: 560, type: "money:paren_or_cr"}
+  row_gap: 7
+  reference_prefix: "Transaction Ref"
+  fx_inline_line_prefixes: ["USD ", "AUD ", "EUR "]
+
+instalments:
+  anchor: "INSTALMENT LOAN / INSTALMENT PLAN SUMMARY"
+  columns:
+    - {name: "card_masked",              x1: 40,  x2: 170}
+    - {name: "description",              x1: 175, x2: 360}
+    - {name: "billed_total",             x1: 365, x2: 450}
+    - {name: "remaining_months",         x1: 455, x2: 510}
+    - {name: "principal_amount",         x1: 515, x2: 580, type: "money"}
+    - {name: "current_month_instalment", x1: 585, x2: 650, type: "money"}
+    - {name: "remaining_principal",      x1: 655, x2: 720, type: "money"}
+
+rewards:
+  anchor: "360° REWARDS POINTS SUMMARY"
+  fields:
+    total_awarded_in_statement:
+      find: "Total 360° Reward Points awarded in this statement"
+      strategy: right_line
+      post: int
+    total_points_brought_forward:
+      find: "Total points brought forward"
+      strategy: right_line
+      post: int
+    points_used_or_expired:
+      find: "Points used and/or expired"
+      strategy: right_line
+      post: int
+    points_adjustment:
+      find: "Points adjustment in this statement"
+      strategy: right_line
+      post: int
+    total_points_available:
+      find: "Total points available"
+      strategy: right_line
+      post: int
+  by_card_table:
+    columns:
+      - {name: "card_masked",     x1: 40,  x2: 200}
+      - {name: "previous_balance",x1: 205, x2: 260, type: "int"}
+      - {name: "earned",          x1: 265, x2: 310, type: "int"}
+      - {name: "redeemed",        x1: 315, x2: 360, type: "int"}
+      - {name: "adjustment",      x1: 365, x2: 410, type: "int"}
+      - {name: "current_balance", x1: 415, x2: 470, type: "int"}
+      - {name: "expiry_date",     x1: 475, x2: 560, type: "date:%d %b %Y"}

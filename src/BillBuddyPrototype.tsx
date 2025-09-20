@@ -146,56 +146,41 @@ function parseSCStatement(text: string): Txn[] {
     const yearMatch = text.match(/Statement Date\s*:\s*\d{1,2}\s+[A-Za-z]{3,}\s+(\d{4})/i);
     const year = yearMatch ? Number(yearMatch[1]) : new Date().getFullYear();
 
-    const pages = text.split(/Page\s*\n\s*of\s*\n\s*\d+\s*\n\s*\d+/);
+    // Strategy: Find all merchants, find all transaction details, then zip them.
 
-    let allMerchants: string[] = [];
-    let allTransactionDetails: { date: string; amount: string; }[] = [];
+    // 1. Find all merchants
+    const merchantRegex = /Transaction Ref \d+\n(.+)/g;
+    const allMerchants = [...text.matchAll(merchantRegex)].map(m =>
+        m[1].replace(/SINGAPORE SG/i, '')
+            .replace(/#\d+\/\d+~~/, '')
+            .replace(/ Transaction Ref \d+/g, '')
+            .replace(/\s{2,}/g, ' ')
+            .trim()
+    );
 
-    for (const page of pages) {
-        // On each page, extract merchants
-        const merchantRegex = /Transaction Ref \d+\n(.*?)(?=\n\nTransaction Ref|\n\nPAYMENT|\n\n4864-|\n\nThis statement|\n\nTotal|\n\nFor the latest)/gs;
-        const pageMerchants = [...page.matchAll(merchantRegex)].map(m =>
-            m[1].replace(/SINGAPORE SG/i, '')
-                .replace(/#\d+\/\d+~~/, '')
-                .replace(/ Transaction Ref \d+/g, '')
-                .replace(/\n/g, ' ')
-                .replace(/\s{2,}/g, ' ')
-                .trim()
-        );
-        allMerchants.push(...pageMerchants);
+    // 2. Find all transaction details
+    const allTransactionDetails: { date: string; amount: string; }[] = [];
+    const lines = text.split('\n').map(l => l.trim());
 
-        // And extract transaction details
-        const transactionSections = page.split(/Amount\n\(SGD\)/);
-        if (transactionSections.length < 2) continue;
+    // Find all transaction data lines (date, date, amount)
+    for (let i = 0; i < lines.length - 2; i++) {
+        const line1 = lines[i];
+        const line2 = lines[i+1];
+        const line3 = lines[i+2];
 
-        const transactionData = transactionSections[1];
-        const lineItemRegex = /^(?:\d{1,2}\s[A-Za-z]{3}|[\d,]+\.\d{2}CR?)$/gm;
-        const items = transactionData.match(lineItemRegex) || [];
+        if (/^\d{1,2}\s[A-Za-z]{3}$/.test(line1) &&
+            /^\d{1,2}\s[A-Za-z]{3}$/.test(line2) &&
+            /^[\d,]+\.\d{2}(?:CR)?$/.test(line3)) {
 
-        for (let i = 0; i < items.length; i += 3) {
-            if (i + 2 < items.length) {
-                const transDate = items[i];
-                const postDate = items[i+1];
-                const amountStr = items[i+2];
-
-                if (/\d{1,2}\s[A-Za-z]{3}/.test(transDate) && /\d{1,2}\s[A-Za-z]{3}/.test(postDate) && /[\d,]+\.\d{2}/.test(amountStr)) {
-                    allTransactionDetails.push({ date: transDate, amount: amountStr });
-                } else {
-                    // Pattern is broken, try to resync by skipping one item
-                    i = i - 2;
-                }
-            }
+            allTransactionDetails.push({ date: line1, amount: line3 });
+            i += 2; // Skip the next 2 lines as they are part of this transaction
         }
     }
 
-    // In some cases, the merchant name is split across lines and picked up as separate merchants.
-    // Let's try to filter out some obvious non-merchant entries.
-    const cleanedMerchants = allMerchants.filter(m => !/^\d+$/.test(m) && m.length > 3 && m.toLowerCase() !== 'description');
-
-    // Now, combine merchants and transactionDetails
-    const numTransactions = Math.min(cleanedMerchants.length, allTransactionDetails.length);
+    // 3. Combine them
+    const numTransactions = Math.min(allMerchants.length, allTransactionDetails.length);
     for (let i = 0; i < numTransactions; i++) {
-        const merchant = cleanedMerchants[i];
+        const merchant = allMerchants[i];
         const detail = allTransactionDetails[i];
 
         const rawAmount = Number(detail.amount.replace(/,/g, "").replace(/CR/,''));
